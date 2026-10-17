@@ -6,7 +6,7 @@ description = "Local-first isolated agent workspace prototype"
 license = "MIT"
 
 [dependencies]
-rusqlite = { version = "0.32", features = ["bundled"] }
+rusqlite = { version = "=0.39.0", features = ["bundled", "fallible_uint"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"

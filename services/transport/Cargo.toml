@@ -24,3 +24,8 @@ tempfile = "3"
 
 [dev-dependencies]
 rcgen = "0.13"
+rusqlite = { version = "=0.39.0", features = ["bundled", "fallible_uint"] }
+
+[[test]]
+name = "sqlite_runtime"
+path = "../../tests/sqlite_runtime.rs"

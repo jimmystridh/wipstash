@@ -42,6 +42,11 @@ jobs:
         run: cargo build --locked --manifest-path services/transport/Cargo.toml
       - name: Build remote backup component
         run: cargo build --locked --manifest-path services/backup/Cargo.toml
+      - name: Verify linked SQLite runtime on every platform
+        run: |
+          for manifest in Cargo.toml services/storage/Cargo.toml services/backup/Cargo.toml services/transport/Cargo.toml simulations/wan/Cargo.toml; do
+            cargo test --locked --manifest-path "$manifest" --test sqlite_runtime -- --nocapture
+          done
       - name: Full Linux suites
         if: runner.os == 'Linux'
         run: |
@@ -50,6 +55,7 @@ jobs:
           cargo test --locked --manifest-path services/backup/Cargo.toml
           cargo test --locked --manifest-path services/storage/Cargo.toml
           cargo test --locked --manifest-path crates/repair-runner/Cargo.toml
+          cargo test --locked --manifest-path simulations/wan/Cargo.toml
           python tests/adversarial.py
           python tests/gap_closure.py
           python tests/source_sync.py

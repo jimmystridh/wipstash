@@ -4,10 +4,14 @@ name = "wipstash-backup"
 version = "0.1.0"
 edition = "2021"
 [dependencies]
-rusqlite = { version = "0.32", features = ["bundled"] }
+rusqlite = { version = "=0.39.0", features = ["bundled", "fallible_uint"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 fs2 = "0.4"
 wipstash-platform = { path = "../../crates/platform" }
 [dev-dependencies]
 tempfile = "3"
+
+[[test]]
+name = "sqlite_runtime"
+path = "../../tests/sqlite_runtime.rs"
