@@ -27,7 +27,7 @@ The implementation here is a **Linux-tested, cooperative, single-machine prototy
 | Authenticated LAN/WAN and authority epochs | Typed admission, durable replay/epoch binding and quarantined public source exchange wired to independent client/authority engines | Artifact origin remains operator-asserted on the filesystem path; the separate mTLS service binds certificate identity and rechecks ACL/revocation. In-memory tests only; no deployed pairing, remote fencing or migration drill; see NETWORK.md |
 | GitHub asynchronous backup | Local bare-repository backup plus separate durable asynchronous GitHub replication library and worker integration | Local/injected transport tests; real GitHub credential, namespace, branch-policy and fresh-host restore acceptance remain open |
 | Disaster recovery | Read-only `backup_verify_restore`; separate `restore` reconstructs a public subset in new empty state | Version 2 retains public intent, ownership, eligibility, operation identity, queue and replay metadata. Execution is fenced until explicit `recovery_activate`; private WIP is excluded and operator assertion is not remote fencing |
-| Native cross-platform support | Native lifecycle/IPC/vault adapters, strict portable paths and native CI definition | Windows GNU and macOS Darwin cross-checks passed; native runtime/filesystem/credential behavior remains unvalidated; no installer acceptance |
+| Native cross-platform support | Native lifecycle/IPC/vault adapters, strict portable paths and native CI definition | Linux, macOS and Windows CI passed native process/MCP/policy contracts and transport/backup builds; actual native vault access, broader filesystem behavior and installer acceptance remain unvalidated |
 | Platform credential storage | Platform vault adapters and allowlisted Git credential-helper integration | Native vault/runtime and real remote authentication acceptance remain open; code presence is not credential provisioning |
 | Retention and garbage collection | Pins retained; separate conservative loose-object collector and storage admission | 32 storage-service tests reported; no automatic pin expiry, transactional reservation, whole-store reclamation or power-loss guarantee |
 | Power-loss durability | SQLite WAL/FULL, explicit Git fsync and staged file/directory syncs on Unix | No controlled power-loss, filesystem corruption or storage-loss validation |
@@ -81,7 +81,7 @@ The README's small example demonstrates the distinction between publication and 
 ## Concrete work remaining before target v1
 
 1. Demonstrate actual Codex/Claude integrations and a verified, enforceable writer coordination contract; contain detached descendants and recover ownership safely after process death.
-2. Establish native Linux/macOS/Windows CI, filesystem/process adapters, supported toolchain floors and IPC identity verification. Validate open-file/case-rename/reparse-point hazards.
+2. Extend the passing native Linux/macOS/Windows process and build CI to broader filesystem/IPC acceptance. Validate open-file/case-rename/reparse-point hazards, native vault access and installer behavior.
 3. Validate the implemented mTLS control/object/event service and resumable transfer path in a permitted deployment, including certificate lifecycle, revocation, quotas and multi-machine failure drills. Authenticated fenced migration remains open.
 4. Make model repair confined and auditable, with confined execution and exact resolution/check provenance; retain the implemented durable retry/budget accounting; verify malicious repository/worker behavior.
 5. Complete and validate asynchronous GitHub worker integration with an approved namespace and credential flow; run a fresh-host recovery drill using version 2 public metadata and explicit activation.
@@ -102,3 +102,7 @@ See [client adapter contract](CLIENTS.md), [storage boundary](STORAGE.md) and [t
 ## Confined repair dispatch
 
 Repair now defaults to `execution_profile: "confined"`. A missing/unavailable backend keeps the proposal quarantined; it does not fall back to ordinary subprocess execution. The explicit `trusted_unsandboxed` profile is for unsafe development fixtures and is never enabled automatically. The Linux bubblewrap implementation has contract tests, but its single live probe was blocked by the cloud environment (NETLINK_ROUTE permission); live confinement remains unverified here. See `crates/repair-runner/README.md`. Optional check commands are still trusted execution and are not thereby sandboxed.
+
+## Verified native baseline
+
+[Commit 0f0b284](https://github.com/jimmystridh/wipstash/commit/0f0b2841627bfbdee1370867b284b6a1705253d6) passed [Linux, macOS and Windows CI](https://github.com/jimmystridh/wipstash/actions/runs/39080367426). Each OS ran process, MCP and policy contracts and compiled transport/backup. All five SQLite consumers on all three OSes printed bundled SQLite 3.51.3 and passed runtime/checked-integer guards. This includes the upstream WAL-reset fix; it does not establish power-loss or deployed-network acceptance. Linux also ran the full suites and strict Clippy.

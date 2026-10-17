@@ -1,4 +1,5 @@
 use serde_json::json;
+#[cfg(unix)]
 use std::io::Write;
 use wipstash_transport::{
     fingerprint,
@@ -54,6 +55,8 @@ fn restart_lost_ack_replay_and_final_digest() {
     store
         .chunk(&b, &id, CHUNK_MAX as u64, &payload[CHUNK_MAX..])
         .unwrap();
+    assert_eq!(store.artifact(&b, &id).unwrap().objects, payload);
+    assert!(store.complete(&b, &id, serde_json::Value::Null).is_err());
     assert_eq!(store.artifact(&b, &id).unwrap().objects, payload);
     let imported = json!({"ok":true,"proposal":"core-proposal"});
     store.complete(&b, &id, imported.clone()).unwrap();
@@ -114,6 +117,7 @@ fn binding_paths_and_immutable_manifest() {
         .begin(&b, &serde_json::to_vec(&changed).unwrap())
         .is_err());
 }
+#[cfg(unix)]
 #[test]
 fn journal_recovery_discards_only_unacknowledged_tail_and_rejects_corruption() {
     let t = tempfile::tempdir().unwrap();
@@ -145,7 +149,10 @@ fn engine_path() -> std::path::PathBuf {
     std::env::var_os("WIPSTASH_ENGINE")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| {
-            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/debug/wipstash")
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!(
+                "../../target/debug/wipstash{}",
+                std::env::consts::EXE_SUFFIX
+            ))
         })
         .canonicalize()
         .expect("build engine first")

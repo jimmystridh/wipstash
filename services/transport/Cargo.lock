@@ -1009,6 +1009,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tokio-rustls",
+ "windows-sys 0.61.2",
  "wipstash-platform",
  "wipstash-storage",
  "zeroize",

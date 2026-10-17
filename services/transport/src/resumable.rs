@@ -2,14 +2,39 @@
 //! durable transport storage, never source acceptance. No automatic expiration:
 //! operators must preserve this root (and its quota) across service restarts.
 use crate::{error, fingerprint, Artifact, Result, MANIFEST_MAX, PAYLOAD_MAX};
+#[cfg(not(windows))]
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
-    fs::{self, File, OpenOptions},
-    io::{Read, Seek, SeekFrom, Write},
+    fs,
     path::{Path, PathBuf},
 };
+
+#[cfg(not(windows))]
+use std::{
+    fs::{File, OpenOptions},
+    io::{Read, Seek, SeekFrom, Write},
+};
+
+#[cfg(any(windows, test))]
+mod sqlite;
+#[cfg(windows)]
+mod windows_path;
+#[cfg(windows)]
+pub use sqlite::Store;
+
+/// Windows keeps its database in the existing trusted staging directory.
+pub fn storage_root(staging: &Path) -> PathBuf {
+    #[cfg(windows)]
+    {
+        staging.to_path_buf()
+    }
+    #[cfg(not(windows))]
+    {
+        staging.join("resumable")
+    }
+}
 
 pub const CHUNK_MAX: usize = 256 * 1024;
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -46,6 +71,7 @@ struct Record {
     status: Status,
     chunks: Vec<Chunk>,
 }
+#[cfg(not(windows))]
 pub struct Store {
     root: PathBuf,
 }
@@ -53,6 +79,7 @@ pub struct Store {
 pub fn transfer_id(binding: &Binding, manifest: &[u8]) -> Result<String> {
     Ok(fingerprint(&serde_json::to_vec(&(1, binding, manifest))?))
 }
+#[cfg(not(windows))]
 impl Store {
     pub fn open(root: impl AsRef<Path>) -> Result<Self> {
         let root = root.as_ref();
@@ -306,6 +333,9 @@ impl Store {
     /// Call only after successful trusted-core sync_import, never after chunk ack.
     /// A crash before this journal write safely retries the core's idempotent import.
     pub fn complete(&self, binding: &Binding, id: &str, import_result: Value) -> Result<Status> {
+        if import_result.is_null() {
+            return Err(error("transfer_result_null"));
+        }
         let _lock = self.lock()?;
         let mut record = self.read(binding, id)?;
         if record.status.committed_offset != record.status.payload_len {
@@ -411,6 +441,7 @@ where
 
 // Reject symlinks, including configured ancestors. This does not claim protection
 // against malicious same-account processes racing filesystem replacement.
+#[cfg(not(windows))]
 fn check_ancestors(path: &Path) -> Result<()> {
     if !path.is_absolute() {
         return Err(error("absolute_transfer_root_required"));
@@ -440,7 +471,7 @@ fn sync_dir(path: &Path) -> Result<()> {
     File::open(path)?.sync_all()?;
     Ok(())
 }
-#[cfg(not(unix))]
+#[cfg(all(not(unix), not(windows)))]
 fn sync_dir(_path: &Path) -> Result<()> {
     Err(error("resumable_directory_durability_unsupported"))
 }
@@ -449,4 +480,37 @@ pub fn is_missing(error: &(dyn std::error::Error + Send + Sync + 'static)) -> bo
     error
         .downcast_ref::<std::io::Error>()
         .is_some_and(|e| e.kind() == std::io::ErrorKind::NotFound)
+}
+
+// SQLite updates may rewrite the retained BLOB and its rollback journal. Charge
+// full payload capacity, not only the arriving chunk. Physical high-water files
+// remain counted by the shared storage scanner after logical payload deletion.
+pub(crate) fn append_admission(status: &Status, incoming: usize) -> u64 {
+    #[cfg(windows)]
+    {
+        status.payload_len + RECORD_BOUND as u64 + incoming as u64
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = status;
+        incoming as u64 + 512 * 1024
+    }
+}
+#[cfg(any(windows, test))]
+const RECORD_BOUND: usize = MANIFEST_MAX * 8 + 2 * 1024 * 1024;
+
+pub(crate) fn needs_bootstrap(root: &Path) -> bool {
+    #[cfg(windows)]
+    {
+        matches!(fs::symlink_metadata(root.join("resumable-v1.sqlite3")), Err(e) if e.kind() == std::io::ErrorKind::NotFound)
+    }
+    #[cfg(not(windows))]
+    {
+        !root.exists()
+    }
+}
+
+#[cfg(windows)]
+pub(crate) fn validate_storage_root(root: &Path) -> Result<()> {
+    windows_path::check(root)
 }

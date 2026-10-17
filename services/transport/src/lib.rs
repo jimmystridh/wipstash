@@ -299,6 +299,8 @@ impl Service {
         {
             return Err(error("invalid_limits"));
         }
+        #[cfg(windows)]
+        resumable::validate_storage_root(&config.staging)?;
         config.state = std::fs::canonicalize(&config.state)?;
         config.staging = std::fs::canonicalize(&config.staging)?;
         if config.state.starts_with(&config.staging) || config.staging.starts_with(&config.state) {
@@ -397,8 +399,8 @@ impl Service {
                 device: p.device.clone(),
                 project: p.project.clone(),
             };
-            let root = self.config.staging.join("resumable");
-            if !root.exists() {
+            let root = resumable::storage_root(&self.config.staging);
+            if resumable::needs_bootstrap(&root) {
                 self.storage_admission(0)?;
             }
             let store = resumable::Store::open(root)?;
@@ -452,7 +454,7 @@ impl Service {
                     }
                     if offset == previous.committed_offset && previous.import_result.is_none() {
                         // Includes the maximum temporary journal rewrite, not just new payload bytes.
-                        self.storage_admission(body.len() as u64 + 512 * 1024)?;
+                        self.storage_admission(resumable::append_admission(&previous, body.len()))?;
                     }
                     store.chunk(&binding, id, offset, body)?
                 } else if method == "POST"
