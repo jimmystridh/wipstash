@@ -234,16 +234,9 @@ mod tests {
         }
     }
     #[cfg(windows)]
-    #[test]
-    fn native_piped_output() {
+    fn windows_output(spec: &Launch) -> (Outcome, String, String) {
         use std::io::Read;
-        let mut spec = launch(Purpose::CooperativeCommand);
-        spec.arguments = vec![
-            "/D".into(),
-            "/C".into(),
-            "echo output& echo error 1>&2& exit 0".into(),
-        ];
-        let mut process = ManagedProcess::spawn_piped(&spec).unwrap();
+        let mut process = ManagedProcess::spawn_piped(spec).unwrap();
         let (mut out, mut err) = process.take_output().unwrap();
         let stdout = std::thread::spawn(move || {
             let mut bytes = Vec::new();
@@ -256,25 +249,118 @@ mod tests {
             bytes
         });
         let outcome = process.finish(Duration::from_secs(5)).unwrap();
-        assert_eq!(outcome.drain, DrainEvidence::WindowsJobEmpty);
-        assert_eq!(outcome.completion, Completion::Exited { code: Some(0) });
-        assert!(String::from_utf8(stdout.join().unwrap())
-            .unwrap()
-            .contains("output"));
-        assert!(String::from_utf8(stderr.join().unwrap())
-            .unwrap()
-            .contains("error"));
+        (
+            outcome,
+            String::from_utf8_lossy(&stdout.join().unwrap()).into_owned(),
+            String::from_utf8_lossy(&stderr.join().unwrap()).into_owned(),
+        )
+    }
+    #[cfg(windows)]
+    #[test]
+    fn native_piped_output() {
+        let mut spec = launch(Purpose::CooperativeCommand);
+        spec.arguments = vec![
+            "/D".into(),
+            "/C".into(),
+            "echo output& echo error 1>&2& exit 0".into(),
+        ];
+        // An empty allowlist must work without silently inheriting the host's
+        // environment. Also exercise the explicit SystemRoot configuration.
+        for environment in [
+            vec![],
+            vec![("SystemRoot".into(), std::env::var_os("SystemRoot").unwrap())],
+        ] {
+            spec.environment = environment;
+            let (outcome, stdout, stderr) = windows_output(&spec);
+            assert_eq!(outcome.drain, DrainEvidence::WindowsJobEmpty);
+            assert_eq!(
+                outcome.completion,
+                Completion::Exited { code: Some(0) },
+                "stdout: {stdout:?}; stderr: {stderr:?}"
+            );
+            assert!(
+                stdout.contains("output"),
+                "stdout: {stdout:?}; stderr: {stderr:?}"
+            );
+            assert!(
+                stderr.contains("error"),
+                "stdout: {stdout:?}; stderr: {stderr:?}"
+            );
+        }
     }
     #[cfg(windows)]
     #[test]
     fn native_job_reports_drained_after_exit() {
         let mut spec = launch(Purpose::EnforcedWholeSession);
         spec.arguments = vec!["/D".into(), "/C".into(), "exit 7".into()];
-        let outcome = ManagedProcess::spawn(&spec)
+        let (outcome, stdout, stderr) = windows_output(&spec);
+        assert_eq!(
+            outcome.completion,
+            Completion::Exited { code: Some(7) },
+            "stdout: {stdout:?}; stderr: {stderr:?}"
+        );
+        assert_eq!(outcome.drain, DrainEvidence::WindowsJobEmpty);
+        // Keep exercising the no-inherited-handles path as well as the piped
+        // path above, whose output makes command-line failures diagnosable.
+        let uncaptured = ManagedProcess::spawn(&spec)
             .unwrap()
             .finish(Duration::from_secs(5))
             .unwrap();
-        assert_eq!(outcome.completion, Completion::Exited { code: Some(7) });
+        assert_eq!(
+            uncaptured, outcome,
+            "captured stdout: {stdout:?}; stderr: {stderr:?}"
+        );
+    }
+    #[cfg(windows)]
+    const WINDOWS_ARGV_CASES: &[&str] = &[
+        "plain-value",
+        "value with spaces",
+        "value\twith tab",
+        "embedded\"quote",
+        "trailing\\",
+        "space trailing\\",
+        "slash\\\"quote",
+        "雪-value",
+    ];
+    #[cfg(windows)]
+    #[test]
+    fn native_windows_argv_child() {
+        if std::env::var_os("WIPSTASH_ARGV_CHILD").is_none() {
+            return;
+        }
+        // libtest accepts repeated --skip arguments, letting this child inspect
+        // real CRT/Rust decoding without needing a separate fixture executable.
+        let actual: Vec<_> = std::env::args().skip(4).collect();
+        let expected: Vec<_> = WINDOWS_ARGV_CASES
+            .iter()
+            .flat_map(|value| ["--skip".to_owned(), (*value).to_owned()])
+            .collect();
+        assert_eq!(actual, expected);
+    }
+    #[cfg(windows)]
+    #[test]
+    fn native_windows_argv_round_trip() {
+        let mut spec = launch(Purpose::EnforcedWholeSession);
+        spec.executable = std::env::current_exe().unwrap();
+        spec.arguments = vec![
+            "--exact".into(),
+            "tests::native_windows_argv_child".into(),
+            "--nocapture".into(),
+        ];
+        for value in WINDOWS_ARGV_CASES {
+            spec.arguments.extend(["--skip".into(), (*value).into()]);
+        }
+        spec.environment = vec![("WIPSTASH_ARGV_CHILD".into(), "1".into())];
+        let (outcome, stdout, stderr) = windows_output(&spec);
+        assert_eq!(
+            outcome.completion,
+            Completion::Exited { code: Some(0) },
+            "stdout: {stdout:?}; stderr: {stderr:?}"
+        );
+        assert!(
+            stdout.contains("1 passed"),
+            "child did not run: {stdout:?}; {stderr:?}"
+        );
         assert_eq!(outcome.drain, DrainEvidence::WindowsJobEmpty);
     }
     #[cfg(unix)]
@@ -283,9 +369,9 @@ mod tests {
         let mut spec = launch(Purpose::CooperativeCommand);
         spec.arguments = vec!["-c".into(), "exit 7".into()];
         let outcome = ManagedProcess::spawn(&spec)
-            .unwrap()
+            .expect("spawn cooperative exit command")
             .finish(Duration::from_secs(3))
-            .unwrap();
+            .expect("observe exit and drain unreaped cooperative group");
         assert_eq!(
             outcome,
             Outcome {
@@ -295,9 +381,9 @@ mod tests {
         );
         spec.arguments = vec!["-c".into(), "sleep 10".into()];
         let outcome = ManagedProcess::spawn(&spec)
-            .unwrap()
+            .expect("spawn cooperative timeout command")
             .finish(Duration::from_millis(20))
-            .unwrap();
+            .expect("terminate and drain timed-out cooperative group");
         assert_eq!(outcome.completion, Completion::TimedOut);
         assert_eq!(outcome.drain, DrainEvidence::CooperativeOnly);
     }

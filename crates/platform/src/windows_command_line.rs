@@ -1,6 +1,15 @@
 // Windows CRT argument escaping. Executable is supplied separately to CreateProcessW.
 // Shells retain their own command languages; callers must explicitly select them.
+// Do not force quotes around ordinary arguments: cmd.exe does not recognize
+// quoted switches such as "/D" and "/C". This is not a shell escaping API.
 pub(crate) fn quote(argument: &[u16]) -> Vec<u16> {
+    if !argument.is_empty()
+        && !argument
+            .iter()
+            .any(|&unit| matches!(unit, 0x20 | 0x09 | 0x22))
+    {
+        return argument.to_vec();
+    }
     let mut result = vec![b'"' as u16];
     let mut slashes = 0;
     for &unit in argument {
@@ -29,7 +38,12 @@ mod tests {
             ("", "\"\""),
             ("a b", "\"a b\""),
             ("a\"b", "\"a\\\"b\""),
-            ("path\\", "\"path\\\\\""),
+            ("path\\", "path\\"),
+            ("path with space\\", "\"path with space\\\\\""),
+            ("/D", "/D"),
+            ("/C", "/C"),
+            ("plain", "plain"),
+            ("a\tb", "\"a\tb\""),
         ] {
             assert_eq!(
                 String::from_utf16(&quote(&input.encode_utf16().collect::<Vec<_>>())).unwrap(),

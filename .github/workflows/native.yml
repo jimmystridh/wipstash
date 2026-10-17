@@ -7,6 +7,11 @@ concurrency:
   cancel-in-progress: true
 jobs:
   native:
+    # Bash exits on any failing native command on every runner, including Windows.
+    # PowerShell otherwise lets a later successful command mask cargo failures.
+    defaults:
+      run:
+        shell: bash
     timeout-minutes: 25
     strategy:
       fail-fast: false
