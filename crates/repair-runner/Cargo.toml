@@ -1,0 +1,11 @@
+[package]
+name = "wipstash-repair-runner"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Fail-closed, network-isolated candidate-only repair execution"
+
+[workspace]
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"

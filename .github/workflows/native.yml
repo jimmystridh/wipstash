@@ -1,0 +1,65 @@
+name: Native builds and contracts
+on: [push, pull_request]
+permissions:
+  contents: read
+concurrency:
+  group: native-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  native:
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: '1.99.1'
+          components: rustfmt, clippy
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Build core and compile all core tests
+        run: |
+          cargo build --locked
+          cargo test --locked --no-run
+      - name: Core MCP contracts
+        run: |
+          cargo test --locked client::tests
+          cargo test --locked policy::command_contract_tests
+          python tests/mcp_protocol.py
+      - name: Native platform contracts
+        run: cargo test --locked --manifest-path crates/platform/Cargo.toml
+      - name: Build authenticated transport
+        run: cargo build --locked --manifest-path services/transport/Cargo.toml
+      - name: Build remote backup component
+        run: cargo build --locked --manifest-path services/backup/Cargo.toml
+      - name: Full Linux suites
+        if: runner.os == 'Linux'
+        run: |
+          cargo test --locked
+          cargo test --locked --manifest-path services/transport/Cargo.toml
+          cargo test --locked --manifest-path services/backup/Cargo.toml
+          cargo test --locked --manifest-path services/storage/Cargo.toml
+          cargo test --locked --manifest-path crates/repair-runner/Cargo.toml
+          python tests/adversarial.py
+          python tests/gap_closure.py
+          python tests/source_sync.py
+      - name: Formatting and strict Clippy
+        if: runner.os == 'Linux'
+        run: |
+          cargo fmt --check
+          cargo clippy --locked --all-targets -- -D warnings
+          cargo fmt --manifest-path crates/platform/Cargo.toml --check
+          cargo clippy --locked --manifest-path crates/platform/Cargo.toml --all-targets -- -D warnings
+          cargo fmt --manifest-path services/transport/Cargo.toml --check
+          cargo clippy --locked --manifest-path services/transport/Cargo.toml --all-targets -- -D warnings
+          cargo fmt --manifest-path services/backup/Cargo.toml --check
+          cargo clippy --locked --manifest-path services/backup/Cargo.toml --all-targets -- -D warnings
+          cargo fmt --manifest-path services/storage/Cargo.toml --check
+          cargo clippy --locked --manifest-path services/storage/Cargo.toml --all-targets -- -D warnings
+          cargo fmt --manifest-path crates/repair-runner/Cargo.toml --check
+          cargo clippy --locked --manifest-path crates/repair-runner/Cargo.toml --all-targets -- -D warnings

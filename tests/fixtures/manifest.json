@@ -1,0 +1,65 @@
+{
+  "fixture": "wipstash-chaos-v1",
+  "files": {
+    "src/pricing.py": {
+      "sha256": "3336a15a3439605d30e68602537d7c0031d7d956c7f190d33ea61489e74e35ca",
+      "bytes": 46,
+      "executable": false
+    },
+    "src/cart.py": {
+      "sha256": "2f310c6e62bde9e2750d8a50d78b7d0179f0758ed60365abf167ef4db4ec7ba5",
+      "bytes": 103,
+      "executable": false
+    },
+    "src/receipt.py": {
+      "sha256": "2a9cb80a7f91971103afeb61ee99a0ad9ac508ad53e99cb27d8c9202cbec45e9",
+      "bytes": 98,
+      "executable": false
+    },
+    "config/policy.json": {
+      "sha256": "1f3f52edbb508f1b2118121ae063d2b2eaa296d0f936867e7edf5c1eaff4efb3",
+      "bytes": 53,
+      "executable": false
+    },
+    "docs/api.md": {
+      "sha256": "ec42869ecd52de8d0a54568e39fe1aa491b5435467a79da936f2ca2844faef39",
+      "bytes": 41,
+      "executable": false
+    },
+    "docs/CaseGuide.txt": {
+      "sha256": "e135739b828f5ef4368f7025e234e210921bccde2593798bfb05343cc510acb0",
+      "bytes": 30,
+      "executable": false
+    },
+    "notes/shared.txt": {
+      "sha256": "4b654bd1437066b13498661f3ca14774daf1066d072036beffaf06f0c014250e",
+      "bytes": 9,
+      "executable": false
+    },
+    "data/lf.txt": {
+      "sha256": "911169ddaaf146aff539f58c26c489af3b892dff0fe283c1c264c65ae5aa59a2",
+      "bytes": 4,
+      "executable": false
+    },
+    "data/crlf.txt": {
+      "sha256": "58055bdcc73787eb88c78d36f0b4939e9c5dc1c3ad17e25cc85a6833cf1a0cab",
+      "bytes": 6,
+      "executable": false
+    },
+    "assets/palette.bin": {
+      "sha256": "c8f5d0341d54d951a71b136e6e2afcb14d11ed8489a7ae126a8fee0df6ecf193",
+      "bytes": 4096,
+      "executable": false
+    },
+    "scripts/show.sh": {
+      "sha256": "32eb66933fdc54107132d0bb5898b5e22567cfa3615898130964059e46faec0a",
+      "bytes": 29,
+      "executable": true
+    },
+    ".gitignore": {
+      "sha256": "e55de4a543aa6f1ca955017077a75f9e054fe5bbec97dc0bda9cb41f0a61fc54",
+      "bytes": 27,
+      "executable": false
+    }
+  }
+}

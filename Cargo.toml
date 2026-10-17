@@ -1,0 +1,15 @@
+[package]
+name = "wipstash"
+version = "0.1.0"
+edition = "2021"
+description = "Local-first isolated agent workspace prototype"
+license = "MIT"
+
+[dependencies]
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+fs2 = "0.4"
+wipstash-repair-runner = { path = "crates/repair-runner" }
+wipstash-platform = { path = "crates/platform" }

@@ -1,0 +1,26 @@
+[package]
+license = "MIT"
+name = "wipstash-transport"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+wipstash-platform = { path = "../../crates/platform" }
+zeroize = "1"
+fs2 = "0.4"
+wipstash-storage = { path = "../storage" }
+tokio = { version = "1", features = ["full"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+rustls-pemfile = "2"
+hyper = { version = "1", features = ["http1", "client", "server"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http-body-util = "0.1"
+bytes = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tempfile = "3"
+
+[dev-dependencies]
+rcgen = "0.13"

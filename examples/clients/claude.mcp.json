@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "wipstash": {
+      "type": "stdio",
+      "command": "/absolute/path/to/wipstash",
+      "args": ["--state", "/absolute/path/to/private-wipstash-state", "mcp"]
+    }
+  }
+}

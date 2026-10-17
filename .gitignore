@@ -1,0 +1,17 @@
+/target/
+/tests/artifacts/
+/tests/__pycache__/
+*.pyc
+
+# Local builds, evidence stores and credentials
+**/target/
+/evidence/
+/tests/review_source_sync/artifacts/
+**/__pycache__/
+.env
+.env.*
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.key
+*.pem
