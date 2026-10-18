@@ -77,7 +77,7 @@ Application-level injected faults are not a real WAN impairment or power failure
 
 Feature checkpoint `42a40025b4d8c3d6b0bfd7bd6b59a597562d5735` passed native
 Linux/macOS/Windows, real-CLI guided pairing over loopback TLS, browser interception
-(53 tests), real-HTTP browser tests (53 tests), and strict Clippy. Later enrollment
+and real-HTTP browser runs (53 API requests each), and strict Clippy. Later enrollment
 response-bound checks passed too. These supersede historical “native never ran”
 and “no listener tested” statements, while the original local adversarial harness
 remains narrower evidence on its own.

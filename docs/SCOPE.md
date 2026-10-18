@@ -111,7 +111,7 @@ Repair now defaults to `execution_profile: "confined"`. A missing/unavailable ba
 
 ## Guided pairing feature evidence (18 October 2026)
 
-Feature checkpoint `42a40025b4d8c3d6b0bfd7bd6b59a597562d5735` passed native Linux, macOS and Windows CI, the actual CLI four-device loopback setup/join/revoke/rotate/server-restart scenario, browser interception (53 tests), real-HTTP browser tests (53 tests), and strict Clippy. Later enrollment response-bound checks also passed. These results supersede older statements that native tests or a listening service had never run. They do not certify all later source changes or the full original specification.
+Feature checkpoint `42a40025b4d8c3d6b0bfd7bd6b59a597562d5735` passed native Linux, macOS and Windows CI, the actual CLI four-device loopback setup/join/revoke/rotate/server-restart scenario, browser interception and real-HTTP browser runs (53 API requests each), and strict Clippy. Later enrollment response-bound checks also passed. These results supersede older statements that native tests or a listening service had never run. They do not certify all later source changes or the full original specification.
 
 At this documentation checkpoint, feature revision `e9afab` has a Unix test-fixture permission failure under repair, not an established product/authentication failure. Final full-revision CI is pending. The reconstructed CI-only real-TLS resumable upload-fault campaign compiles but initially failed on fixture sequencing (`sequence_gap`); a correction and successful rerun are still required. Do not count that campaign as passed. Main remains `112f8e7` pending the final green gate.
 

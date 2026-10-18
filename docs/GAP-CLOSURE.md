@@ -39,7 +39,7 @@ Application-layer [WAN simulation](WAN-SIMULATION.md) injects delayed/faulted de
 
 ## Feature checkpoint and unfinished release gate
 
-Checkpoint `42a40025b4d8c3d6b0bfd7bd6b59a597562d5735` passed native Linux/macOS/Windows, the four-device CLI loopback setup/join/revoke/rotate/restart scenario, 53 browser interception tests, 53 real-HTTP browser tests and strict Clippy. Subsequent enrollment response-bound checks also passed. Earlier “no native runtime” and “no listening service” statements are superseded by these selected-contract results.
+Checkpoint `42a40025b4d8c3d6b0bfd7bd6b59a597562d5735` passed native Linux/macOS/Windows, the four-device CLI loopback setup/join/revoke/rotate/restart scenario, browser interception and real-HTTP browser runs (53 API requests each) and strict Clippy. Subsequent enrollment response-bound checks also passed. Earlier “no native runtime” and “no listening service” statements are superseded by these selected-contract results.
 
 Guided setup is documented in [PAIRING.md](PAIRING.md). It uses isolated TLS enrollment, a managed SQLite authorization store and protected current-account files. Legacy file ACL configuration remains supported. Publication and adoption remain explicit. Test credentials are synthetic; no real credential vault or external account was provisioned.
 

@@ -1,4 +1,4 @@
-//! Install as services/transport/tests/live_tls_ci.rs after review.
+//! Guarded native-CI transport fault acceptance.
 //! CI only: cargo test --manifest-path services/transport/Cargo.toml --test live_tls_ci
 //! four_devices_live_tls_restart_and_faults -- --ignored --nocapture
 //! Requires GITHUB_ACTIONS=true, WIPSTASH_LIVE_TLS_CI=1, and the built root engine.
@@ -441,11 +441,19 @@ async fn scenario() {
         } else {
             0
         };
-        fs::write(
-            workspace.join(format!("{name}.txt")),
-            format!("synthetic-public-{name}\n").repeat(if index == 0 { 20000 } else { 1 }),
-        )
-        .unwrap();
+        let mut public_content = format!("synthetic-public-{name}\n").into_bytes();
+        if index == 0 {
+            // Incompressible deterministic fixture bytes force several actual
+            // transfer chunks even when Git compresses the exported object.
+            let mut random = 0x4d595df4d0f33173_u64;
+            for _ in 0..CHUNK_MAX * 4 {
+                random ^= random << 13;
+                random ^= random >> 7;
+                random ^= random << 17;
+                public_content.push(random as u8);
+            }
+        }
+        fs::write(workspace.join(format!("{name}.txt")), public_content).unwrap();
         engine(
             &local,
             json!({"op":"checkpoint","workspace":"work","expected_generation":selected_generation,
