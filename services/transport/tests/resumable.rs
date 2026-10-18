@@ -224,7 +224,7 @@ async fn actual_engine_in_memory_adapter_resumes_and_imports_only_at_finish() {
         authority: "central".into(),
         epoch: 1,
         device: "central-device".into(),
-        acl: acl.clone(),
+        acl: acl.clone().into(),
         ca: root.join("unused-ca"),
         certificate: root.join("unused-cert"),
         key: root.join("unused-key").into(),

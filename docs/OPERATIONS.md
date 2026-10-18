@@ -6,7 +6,7 @@ There are no project compilation, test or lint checks by default (`checks = []`)
 
 ## Build and test
 
-Prerequisites: Rust/Cargo, Git with `merge-tree --write-tree` support, and Python 3 for the integration harness. `rust-toolchain.toml` pins Rust 1.99.1, the tested environment; this is not a declared minimum supported Rust version (MSRV). Only Linux has been exercised; no minimum supported OS version is promised yet. Git must be on PATH. The lockfile is checked in; dependencies may need downloading on the first build.
+Prerequisites: Rust/Cargo, Git with `merge-tree --write-tree` support, and Python 3 for the integration harness. `rust-toolchain.toml` pins Rust 1.99.1, the tested environment; this is not a declared minimum supported Rust version (MSRV). The full cooperative workflow is exercised on Linux; selected process, Git-path, storage and transfer contracts also run in macOS/Windows CI. Complete native adoption remains unverified; no minimum supported OS version is promised yet. Git must be on PATH. The lockfile is checked in; dependencies may need downloading on the first build.
 
 ```sh
 cargo build --locked
@@ -102,7 +102,7 @@ After initialization, run this in a separate terminal:
 
 The worker periodically integrates proposals and retries the configured local backup with bounded backoff. It uses no network endpoint. CLI requests and the worker share a state lock; long checks/commands block other state operations. Stop the worker with Ctrl-C. It shares `daemon.lock` with `daemon`, so do not run both for one state directory.
 
-`daemon` implements a Unix socket server at `STATE/daemon.sock` with mode 0600 and periodic integration. Socket binding was denied with `EPERM` in the cloud test environment, so its actual request path is unverified there. No alternate network listener is provided as a workaround. The CLI and worker use the engine directly, not socket RPC; the socket daemon does not run the worker's backup retry loop. There is no Windows named-pipe implementation or authenticated remote service.
+`daemon` implements a Unix socket server at `STATE/daemon.sock` with mode 0600 and periodic integration. Socket binding was denied with `EPERM` in the cloud test environment, so its actual request path is unverified there. No alternate network listener is provided as a workaround. The CLI and worker use the engine directly, not socket RPC; the socket daemon does not run the worker's backup retry loop. The core daemon has no Windows named-pipe implementation. A separate authenticated remote component is documented in [NETWORK.md](NETWORK.md).
 
 ## Explicit adoption resolution
 
@@ -174,14 +174,14 @@ This is a public recovery subset, not zero-loss recovery, full coordinator recon
 
 ## Independent client/authority source exchange
 
-See [SOURCE-SYNC.md](SOURCE-SYNC.md) for `sync_configure`, `sync_export`, `sync_import`, `sync_export_history`, and `sync_reexport`. Separate client stores can deliberately publish proposal artifacts, an authority can integrate them, and clients can import verified public heads before explicitly adopting. Transfers preserve private workspace/checkpoint isolation. Import requires explicit confirmation of separately trusted artifact provenance. The current transport is filesystem artifact exchange; it is not an authenticated LAN/WAN service. Fresh clients must replay head history in order; history artifacts can be regenerated. Effective full-history transfer limit is 8 MiB.
+See [SOURCE-SYNC.md](SOURCE-SYNC.md) for `sync_configure`, `sync_export`, `sync_import`, `sync_export_history`, and `sync_reexport`. Separate client stores can deliberately publish proposal artifacts, an authority can integrate them, and clients can import verified public heads before explicitly adopting. Transfers preserve private workspace/checkpoint isolation. Import requires explicit confirmation of separately trusted artifact provenance. These core commands exchange filesystem artifacts. The separate [mTLS transport component](NETWORK.md) handles authenticated network transfer; deployed multi-machine acceptance remains open. Fresh clients must replay head history in order; history artifacts can be regenerated. Effective full-history transfer limit is 8 MiB.
 
 ## Stdio MCP and client setup
 
 Run `wipstash --state /absolute/path/to/state mcp`. The adapter provides bounded, flushed newline-delimited JSON-RPC, MCP initialization/ready lifecycle, typed workflow tools and the generic `wipstash` request tool. See [CLIENTS.md](CLIENTS.md) for setup examples, supported protocol, exact schemas, trust boundary and recovery behavior.
 
-Run `python3 tests/mcp_protocol.py` for scripted protocol tests. The installed Codex CLI parsed a scratch-scoped configuration; this is not evidence of an actual model session or complete client workflow. Claude Code was not installed. Neither adapter registration nor MCP intercepts native file edits.
+Run `python3 tests/mcp_protocol.py` for scripted protocol tests. The installed Codex CLI parsed a scratch-scoped configuration; this is not evidence of an actual model session or complete client workflow. Claude Code stdio initialization/tool discovery has since been verified; this is not a real model-driven workflow. Neither adapter registration nor MCP intercepts native file edits.
 
 An interrupted managed command is never replayed. Its workspace is fenced until an operator stops surviving writers and deliberately calls `command_recover`. Status reports the fence. The acknowledgement is an assertion, not an enforced process-tree guarantee. Arbitrary native writers remain outside the cooperative safety contract.
 
-The native CI definition in `.github/workflows/native.yml` has not been executed on Windows/macOS. Managed commands fail closed on non-Unix platforms. Read [STORAGE.md](STORAGE.md) for size/free-space/durability limits and [TRANSPORT.md](TRANSPORT.md) for the replay/admission foundation used by explicit source exchange. There is no authenticated LAN/WAN service or real GitHub replication yet.
+The native CI definition in `.github/workflows/native.yml` exercises selected contracts on Linux/macOS/Windows. Full Windows adoption and arbitrary-writer coordination are still release gates. Read [STORAGE.md](STORAGE.md) for size/free-space/durability limits and [TRANSPORT.md](TRANSPORT.md) for the replay/admission foundation used by explicit source exchange. Separate authenticated transport and GitHub backup components exist; real remote credentials, deployed multi-machine acceptance and fresh-host recovery remain release gates.

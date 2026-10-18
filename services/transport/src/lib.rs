@@ -1,5 +1,11 @@
 //! Mandatory mutually authenticated HTTPS boundary for the fixed Wipstash engine.
 pub mod daemon;
+pub mod enrollment;
+pub mod pairing;
+pub mod pairing_cli;
+pub mod pairing_files;
+pub mod pairing_crypto;
+pub use pairing::AclSource;
 pub mod resumable;
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
@@ -80,7 +86,7 @@ pub struct Config {
     pub authority: String,
     pub epoch: u64,
     pub device: String,
-    pub acl: PathBuf,
+    pub acl: AclSource,
     pub ca: PathBuf,
     pub certificate: PathBuf,
     pub key: KeySource,
@@ -282,7 +288,7 @@ pub struct Service {
 }
 impl Service {
     pub async fn new(mut config: Config) -> Result<Arc<Self>> {
-        for p in [&config.engine, &config.state, &config.staging, &config.acl] {
+        for p in [config.engine.as_path(), config.state.as_path(), config.staging.as_path(), config.acl.path()] {
             if !p.is_absolute() {
                 return Err(error("absolute_config_paths_required"));
             }
@@ -306,6 +312,16 @@ impl Service {
         if config.state.starts_with(&config.staging) || config.staging.starts_with(&config.state) {
             return Err(error("overlapping_storage_roots"));
         }
+        if let AclSource::Managed { managed } = &config.acl {
+            let binding = pairing::PairingStore::open_existing(managed)?.binding()?;
+            if binding.project != config.project
+                || binding.authority != config.authority
+                || binding.epoch != config.epoch
+                || binding.authority_device != config.device
+            {
+                return Err(error("managed_authority_binding_mismatch"));
+            }
+        }
         let s = Arc::new(Self {
             config,
             gate: Semaphore::new(1),
@@ -328,12 +344,7 @@ impl Service {
     }
 
     fn peer(&self, certificate: &[u8]) -> Result<Peer> {
-        let bytes = read_file(&self.config.acl, 1024 * 1024)?;
-        authorize(
-            &serde_json::from_slice(&bytes)?,
-            certificate,
-            &self.config.project,
-        )
+        self.config.acl.authorize(certificate, &self.config.project)
     }
     fn rate(&self, certificate: &[u8], charge: bool) -> Result<()> {
         let now = Instant::now();
@@ -973,6 +984,10 @@ async fn run_engine_with_timeout(
         let status = child.wait().await?;
         let value: Value = serde_json::from_slice(&bytes)?;
         if !status.success() || value["ok"] != true {
+            // Preserve only reviewed static diagnostics; never forward engine output.
+            if value["error"]["code"] == "binding_inspection_requires_recovery" {
+                return Err(error("binding_inspection_requires_recovery"));
+            }
             return Err(error("engine_rejected"));
         }
         Ok(value)
@@ -1328,3 +1343,6 @@ mod retry_tests {
 
 #[cfg(test)]
 mod key_config_tests;
+
+#[cfg(test)]
+mod managed_service_tests;

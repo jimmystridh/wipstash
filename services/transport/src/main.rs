@@ -42,6 +42,9 @@ enum Operation {
 #[tokio::main]
 async fn main() -> Result<()> {
     let args: Vec<_> = std::env::args().collect();
+    if wipstash_transport::pairing_cli::run(&args[1..]).await? {
+        return Ok(());
+    }
     if args.len() == 3 && args[1] == "serve" {
         let config: Config = serde_json::from_slice(&std::fs::read(&args[2])?)?;
         let mut worker = AuthorityWorker::open_with_limits(

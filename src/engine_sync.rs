@@ -54,6 +54,90 @@ fn config(db: &Connection) -> R<Option<Config>> {
     text.map(|s| serde_json::from_str(&s).map_err(|e| e.to_string()))
         .transpose()
 }
+fn pending_config(db: &Connection) -> R<Option<Config>> {
+    let text: Option<String> = sql(db
+        .query_row(
+            "SELECT value FROM meta WHERE key='sync_client_pending'",
+            [],
+            |r| r.get(0),
+        )
+        .optional())?;
+    text.map(|s| serde_json::from_str(&s).map_err(|e| e.to_string()))
+        .transpose()
+}
+/// Only template-free, empty bare initialization artifacts may be resumed.
+/// Never run Git against an unvalidated local config or follow a symlink.
+fn validate_pending_client_repo(root: &Path) -> R<()> {
+    match fs::symlink_metadata(root) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(format!("io_error: {e}")),
+        Ok(m) if !m.is_dir() || m.file_type().is_symlink() => {
+            return Err("client_initialization_not_pristine".into());
+        }
+        Ok(_) => (),
+    }
+    let mut directories = vec![PathBuf::new()];
+    while let Some(relative) = directories.pop() {
+        for entry in io(fs::read_dir(root.join(&relative)))? {
+            let entry = io(entry)?;
+            let path = relative.join(entry.file_name());
+            let meta = io(fs::symlink_metadata(entry.path()))?;
+            if meta.file_type().is_symlink() {
+                return Err("client_initialization_not_pristine".into());
+            }
+            if meta.is_dir()
+                && [
+                    "objects",
+                    "objects/info",
+                    "objects/pack",
+                    "refs",
+                    "refs/heads",
+                    "refs/tags",
+                ]
+                .iter()
+                .any(|p| path == Path::new(p))
+            {
+                directories.push(path);
+            } else if meta.is_file() && path == Path::new("HEAD") && meta.len() <= 256 {
+                let head = io(fs::read_to_string(entry.path()))?;
+                let branch = head
+                    .trim_end_matches('\n')
+                    .strip_prefix("ref: refs/heads/")
+                    .ok_or("client_initialization_not_pristine")?;
+                ident(branch).map_err(|_| "client_initialization_not_pristine".to_string())?;
+            } else if meta.is_file() && path == Path::new("config") && meta.len() <= 4096 {
+                let text = io(fs::read_to_string(entry.path()))?;
+                let mut core = false;
+                for line in text.lines().map(str::trim).filter(|s| !s.is_empty()) {
+                    if line == "[core]" && !core {
+                        core = true;
+                        continue;
+                    }
+                    let Some((key, value)) = line.split_once('=') else {
+                        return Err("client_initialization_not_pristine".into());
+                    };
+                    let allowed = match key.trim() {
+                        "repositoryformatversion" => value.trim() == "0",
+                        "bare" => value.trim() == "true",
+                        "filemode" | "symlinks" | "ignorecase" | "precomposeunicode" => {
+                            matches!(value.trim(), "true" | "false")
+                        }
+                        _ => false,
+                    };
+                    if !core || !allowed {
+                        return Err("client_initialization_not_pristine".into());
+                    }
+                }
+                if !core {
+                    return Err("client_initialization_not_pristine".into());
+                }
+            } else {
+                return Err("client_initialization_not_pristine".into());
+            }
+        }
+    }
+    Ok(())
+}
 fn required(db: &Connection) -> R<Config> {
     config(db)?.ok_or_else(|| "sync_not_configured".into())
 }
@@ -108,30 +192,223 @@ pub(super) fn configure(state: &Path, db: &Connection, r: &Value) -> R<Value> {
         [],
         |r| r.get(0),
     ))?;
-    if c.role == "client" && (initialized || coordinator(state).repo.exists()) {
+    let pending = pending_config(db)?;
+    if pending.as_ref().is_some_and(|old| old != &c) {
+        return Err("authority_binding_mismatch: pending client binding is immutable".into());
+    }
+    if c.role == "client" && initialized {
         return Err("client_requires_empty_state".into());
     }
     if c.role == "authority" && !initialized {
         return Err("project_not_initialized: init authority source first".into());
     }
     if c.role == "client" {
-        Git::init(&state.join("coordinator.git"))?;
+        let repo = state.join("coordinator.git");
+        if pending.is_none() {
+            match fs::symlink_metadata(&repo) {
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => (),
+                Err(e) => return Err(format!("io_error: {e}")),
+                Ok(_) => return Err("client_requires_empty_state".into()),
+            }
+            // Durable intent precedes every filesystem side effect. Exact retries
+            // can resume this binding, but never adopt arbitrary existing repos.
+            sql(db.execute(
+                "INSERT INTO meta(key,value) VALUES('sync_client_pending',?1)",
+                [serde_json::to_string(&c).map_err(|e| e.to_string())?],
+            ))?;
+        }
+        validate_pending_client_repo(&repo)?;
+        Git::init(&repo)?;
+        validate_pending_client_repo(&repo)?;
     }
     schema(db)?;
     // A persisted binding is the only way incoming artifacts select a project/epoch.
-    sql(db.execute_batch("BEGIN IMMEDIATE"))?;
-    sql(db.execute(
+    let tx = sql(db.unchecked_transaction())?;
+    sql(tx.execute(
         "INSERT INTO meta(key,value) VALUES('sync_config',?1)",
         [serde_json::to_string(&c).map_err(|e| e.to_string())?],
     ))?;
     if c.role == "client" {
-        sql(db.execute(
+        sql(tx.execute(
             "INSERT INTO meta(key,value) VALUES('authority',?1)",
             [&c.authority],
         ))?;
+        sql(tx.execute("DELETE FROM meta WHERE key='sync_client_pending'", []))?;
     }
-    sql(db.execute_batch("COMMIT"))?;
+    sql(tx.commit())?;
     status(state, db)
+}
+/// Explicit local bootstrap. Legacy sync_configure still requires nonempty peers.
+/// Repeated initialization never removes peers or changes an existing binding.
+pub(super) fn initialize_authority(state: &Path, db: &Connection, r: &Value) -> R<Value> {
+    only_fields(
+        r,
+        &["op", "operation_id", "project", "authority", "epoch", "device"],
+    )?;
+    let c = Config {
+        project: field(r, "project")?.into(),
+        authority: field(r, "authority")?.into(),
+        epoch: r["epoch"].as_u64().ok_or("invalid_epoch")?,
+        device: field(r, "device")?.into(),
+        role: "authority".into(),
+        peers: Vec::new(),
+    };
+    for id in [&c.project, &c.authority, &c.device] {
+        ident(id)?;
+    }
+    if c.epoch == 0 || c.epoch > i64::MAX as u64 {
+        return Err("invalid_sync_config".into());
+    }
+    if pending_config(db)?.is_some() {
+        return Err("authority_binding_mismatch: client initialization pending".into());
+    }
+    let exists = if let Some(old) = config(db)? {
+        if old.role != "authority" {
+            return Err("authority_required".into());
+        }
+        if old.project != c.project
+            || old.authority != c.authority
+            || old.epoch != c.epoch
+            || old.device != c.device
+        {
+            return Err("authority_binding_mismatch: sync binding and role are immutable".into());
+        }
+        true
+    } else {
+        false
+    };
+    schema(db)?;
+    let tx = sql(db.unchecked_transaction())?;
+    if !exists {
+        sql(tx.execute(
+            "INSERT INTO meta(key,value) VALUES('sync_config',?1)",
+            [serde_json::to_string(&c).map_err(|e| e.to_string())?],
+        ))?;
+        event(
+            &tx,
+            "sync_authority_initialized",
+            &json!({"operation_id":field(r,"operation_id")?}),
+        )?;
+    }
+    let result = status(state, &tx)?;
+    finish(&tx, field(r, "operation_id")?, &result)?;
+    sql(tx.commit())?;
+    Ok(result)
+}
+fn only_fields(r: &Value, allowed: &[&str]) -> R<()> {
+    if r.as_object()
+        .ok_or("invalid_request")?
+        .keys()
+        .any(|k| !allowed.contains(&k.as_str()))
+    {
+        return Err("invalid_request: unexpected field".into());
+    }
+    Ok(())
+}
+/// Monotonic artifact-source authorization, not authentication or a transport ACL.
+/// Removed/retired transport identities retain their core peer labels and history.
+/// The managed enrollment layer must reject reuse and own explicit rotations.
+pub(super) fn add_peer(db: &Connection, r: &Value) -> R<Value> {
+    only_fields(r, &["op", "operation_id", "peer"])?;
+    let mut c = required(db)?;
+    if c.role != "authority" {
+        return Err("authority_required".into());
+    }
+    let peer = field(r, "peer")?;
+    ident(peer)?;
+    if peer == c.device {
+        return Err("peer_identity_collision: peer is the local device".into());
+    }
+    let existing = c.peers.iter().any(|p| p == peer);
+    if !existing {
+        if c.peers.len() >= 100 {
+            return Err("peer_limit_reached".into());
+        }
+        c.peers.push(peer.into());
+    }
+    let result = json!({"ok":true,"state":"peer_pinned","peer":peer,
+        "already_present":existing,"config":c,"transport_access_granted":false});
+    let tx = sql(db.unchecked_transaction())?;
+    if !existing {
+        sql(tx.execute(
+            "UPDATE meta SET value=?1 WHERE key='sync_config'",
+            [serde_json::to_string(&c).map_err(|e| e.to_string())?],
+        ))?;
+        event(
+            &tx,
+            "sync_peer_added",
+            &json!({"peer":peer,"operation_id":field(r,"operation_id")?}),
+        )?;
+    }
+    finish(&tx, field(r, "operation_id")?, &result)?;
+    sql(tx.commit())?;
+    Ok(result)
+}
+/// Inspect without creating state, changing permissions, or replaying recovery.
+/// Immutable SQLite avoids even WAL/shm creation. Pending journals fail closed
+/// instead of silently inspecting an older main-file snapshot.
+pub(super) fn binding_status(state: &Path) -> R<Value> {
+    let unconfigured =
+        || json!({"ok":true,"state":"unconfigured","initialized":false,"config":null,"pending_config":null});
+    match fs::symlink_metadata(state) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(unconfigured()),
+        Err(e) => return Err(format!("io_error: {e}")),
+        Ok(m) if !m.is_dir() || m.file_type().is_symlink() => {
+            return Err("invalid_state_path".into());
+        }
+        Ok(_) => (),
+    }
+    let path = state.join("state.sqlite");
+    match fs::symlink_metadata(&path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            if io(fs::read_dir(state))?.next().is_none() {
+                return Ok(unconfigured());
+            }
+            return Err("incomplete_state: database missing".into());
+        }
+        Err(e) => return Err(format!("io_error: {e}")),
+        Ok(m) if !m.is_file() || m.file_type().is_symlink() => {
+            return Err("invalid_state_database".into());
+        }
+        Ok(_) => (),
+    }
+    let lock = io(OpenOptions::new().read(true).open(state.join("state.lock")))?;
+    fs2::FileExt::lock_shared(&lock).map_err(|e| e.to_string())?;
+    for name in ["state.sqlite-wal", "state.sqlite-journal"] {
+        match fs::symlink_metadata(state.join(name)) {
+            Ok(m) if m.len() != 0 || !m.is_file() || m.file_type().is_symlink() => {
+                return Err("binding_inspection_requires_recovery: pending database journal".into());
+            }
+            Ok(_) => (),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => (),
+            Err(e) => return Err(format!("io_error: {e}")),
+        }
+    }
+    let absolute = io(path.canonicalize())?;
+    let mut uri = String::from("file:");
+    for byte in absolute.to_str().ok_or("invalid_state_path")?.bytes() {
+        if byte.is_ascii_alphanumeric() || b"/-_.:".contains(&byte) {
+            uri.push(byte as char);
+        } else {
+            uri.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    uri.push_str("?immutable=1");
+    let db = sql(Connection::open_with_flags(
+        uri,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_URI,
+    ))?;
+    let initialized: bool = sql(db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM meta WHERE key='authority')",
+        [],
+        |row| row.get(0),
+    ))?;
+    let c = config(&db)?;
+    if c.is_some() && !initialized {
+        return Err("incomplete_state: binding without authority metadata".into());
+    }
+    let pending = pending_config(&db)?;
+    Ok(json!({"ok":true,"state":if c.is_some(){"configured"}else{"unconfigured"},"initialized":initialized,"config":c,"pending_config":pending}))
 }
 pub(super) fn status(state: &Path, db: &Connection) -> R<Value> {
     let c = required(db)?;

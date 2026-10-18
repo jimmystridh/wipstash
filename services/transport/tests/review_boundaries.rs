@@ -14,7 +14,7 @@ fn config() -> Config {
         authority: "authority".into(),
         epoch: 7,
         device: "authority-device".into(),
-        acl: PathBuf::from("/review/acl"),
+        acl: PathBuf::from("/review/acl").into(),
         ca: PathBuf::from("/review/ca"),
         certificate: PathBuf::from("/review/cert"),
         key: PathBuf::from("/review/key").into(),

@@ -40,12 +40,19 @@ jobs:
           cargo test --locked canonical_local_repository_transfer_opens_two_workspaces
           cargo test --locked local_repository_transport_blocks_configured_remote_helpers
           python tests/mcp_protocol.py
+          python tests/sync_peer_authorization.py
       - name: Native platform contracts
         run: cargo test --locked --manifest-path crates/platform/Cargo.toml
       - name: Read-only inspector contracts
         run: cargo test --locked --manifest-path services/inspector/Cargo.toml
       - name: Build authenticated transport
         run: cargo build --locked --manifest-path services/transport/Cargo.toml
+      - name: Guided pairing contracts
+        run: |
+          cargo test --locked --manifest-path services/transport/Cargo.toml --lib pairing
+          cargo test --locked --manifest-path services/transport/Cargo.toml --lib managed_service_tests
+      - name: Enrollment TLS contracts
+        run: cargo test --locked --manifest-path services/transport/Cargo.toml --lib enrollment
       - name: Native storage admission and Git paths
         run: |
           cargo test --locked --manifest-path services/storage/Cargo.toml canonical_roots_preserve_admission_checks

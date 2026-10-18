@@ -1,0 +1,42 @@
+name: Prepare reviewed pairing dependencies
+on:
+  push:
+    branches: ["pairing-ergonomics"]
+permissions:
+  contents: read
+concurrency:
+  group: pairing-prepare-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: '1.99.1'
+          components: rustfmt, clippy
+      - name: Resolve changed transport manifest
+        run: cargo metadata --manifest-path services/transport/Cargo.toml --format-version 1 > /dev/null
+      - name: Prepare formatting for review
+        run: |
+          cargo fmt
+          cargo fmt --manifest-path services/transport/Cargo.toml
+          git diff -- src tests services/transport/src services/transport/tests > pairing-format.patch
+      - name: Compile and test disposable pairing fixtures
+        run: |
+          cargo build --locked
+          python3 tests/sync_peer_authorization.py
+          cargo test --locked --manifest-path services/transport/Cargo.toml
+          cargo clippy --locked --manifest-path services/transport/Cargo.toml --all-targets -- -D warnings
+      - name: Save only dependency lock and reviewed-source formatting
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pairing-prepare-${{ github.sha }}
+          path: |
+            services/transport/Cargo.lock
+            pairing-format.patch
+          if-no-files-found: error
+          retention-days: 7

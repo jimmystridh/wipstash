@@ -281,6 +281,9 @@ fn finalize_adoption(db: &Connection, id: &str) -> R<Value> {
     Ok(result)
 }
 pub fn execute(state: &Path, r: Value) -> R<Value> {
+    if r["op"] == "sync_binding_status" {
+        return sync::binding_status(state);
+    }
     io(fs::create_dir_all(state))?;
     #[cfg(unix)]
     {
@@ -313,6 +316,8 @@ pub fn execute(state: &Path, r: Value) -> R<Value> {
             "init"
                 | "restore"
                 | "sync_configure"
+                | "sync_initialize_authority"
+                | "sync_add_peer"
                 | "sync_import"
                 | "sync_export"
                 | "sync_reexport"
@@ -374,6 +379,8 @@ pub fn execute(state: &Path, r: Value) -> R<Value> {
             | "resolve_adoption"
             | "backup_flush"
             | "retry_proposal"
+            | "sync_initialize_authority"
+            | "sync_add_peer"
     );
     let id = if mutating {
         let id = field(&r, "operation_id")?;
@@ -420,6 +427,8 @@ pub fn execute(state: &Path, r: Value) -> R<Value> {
         "sync_export_lookup" => sync::export_lookup(&db, &r),
         "sync_import" => sync::import(state, &db, &r),
         "sync_status" => sync::status(state, &db),
+        "sync_initialize_authority" => sync::initialize_authority(state, &db, &r),
+        "sync_add_peer" => sync::add_peer(&db, &r),
         "sync_pending" => sync::pending(&db, &r),
         "sync_export_current_head" => sync::export_current_head(state, &db, &r),
         "open" => open(state, &db, &r),

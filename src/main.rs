@@ -30,6 +30,22 @@ fn worker_startup(state: &std::path::Path) -> Result<(), String> {
 }
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    if args.get(1).map(String::as_str) == Some("remote") {
+        // Resolve a fixed companion executable, never a PATH-selected helper.
+        let outcome = std::env::current_exe().and_then(|path| {
+            let parent = path.parent().ok_or_else(|| std::io::Error::other("missing_executable_directory"))?;
+            let name = if cfg!(windows) { "wipstash-transport.exe" } else { "wipstash-transport" };
+            std::process::Command::new(parent.join(name)).args(&args[2..]).status()
+        });
+        match outcome {
+            Ok(status) => std::process::exit(status.code().unwrap_or(1)),
+            Err(_) => {
+                eprintln!("remote_helper_unavailable: install wipstash-transport beside wipstash");
+                std::process::exit(1);
+            }
+        }
+    }
+
     if args.len() < 4 || args[1] != "--state" {
         eprintln!("usage: wipstash --state DIR '<JSON>' | daemon | worker | stdin | mcp");
         std::process::exit(2);

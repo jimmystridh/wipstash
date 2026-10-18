@@ -158,6 +158,8 @@ Git remains the storage and merge foundation. Wipstash adds the boundary between
 
 **MCP:** typed workflow tools plus a generic request tool over stdio. [Client setup](docs/CLIENTS.md) includes [Codex](examples/clients/codex.toml) and [Claude Code](examples/clients/claude.mcp.json) examples. Registration does not intercept native edits or enforce a writer freeze.
 
+**Guided remote setup (experimental):** `wipstash remote` delegates to a fixed companion `wipstash-transport` binary installed beside it. Use `setup`, `device invite`, and `join` to manage private keys, one-time invitations, certificates and configuration without hand-editing JSON. Enrollment has its own server-authenticated TLS endpoint; synchronization still requires mTLS. Local `device list`, `revoke`, `rotate`, `cancel-invite` and `doctor` commands expose recovery and lifecycle operations. Pairing never publishes or adopts source. [Setup, trusted invitation delivery, rotation and recovery →](docs/PAIRING.md)
+
 **Source exchange:** independent client stores export deliberate public proposals; an authority imports and integrates them; clients import public heads and explicitly adopt. The core currently exchanges bounded filesystem artifacts with separately trusted provenance. [Protocol and commands →](docs/SOURCE-SYNC.md)
 
 **Receipts:** the authority can return a proposal observation with its disposition, evidence category, identity, and revision. Clients distinguish local transport state from the latest received authority observation. A receipt does not install a head, adopt source, or prove the authority is reachable right now. Raw worker output and private checkpoint histories are excluded from receipt payloads.
@@ -171,9 +173,9 @@ Git remains the storage and merge foundation. Wipstash adds the boundary between
 | CLI and stdio MCP | Implemented; Claude Code 2.1.302 stdio handshake/tool discovery verified, Codex configuration parsing verified; model-driven workflows remain unverified |
 | Checks and repair | Empty by default; durable repair budgets and confined-or-unavailable repair dispatch. Linux sandbox execution is not verified in this environment; no bundled model worker |
 | Public recovery | Version 2 preserves public intent, ownership, queue order, operation identity and replay metadata; restored execution stays fenced until explicit operator activation. Private WIP is excluded |
-| Authenticated transport | mTLS service/client implementation, certificate ACLs and resumable uploads; in-memory security and transfer tests, no listening-service or multi-machine acceptance run |
+| Authenticated transport | mTLS service/client implementation, certificate ACLs and resumable uploads; in-memory security and transfer tests. Deployed multi-machine acceptance remains open |
 | Storage | Conservative loose-object collection and storage admission; no automatic expiry of private checkpoints or acknowledged uploads, no power-loss guarantee |
-| Native platform and GitHub backup | Native adapters cross-check on Windows GNU/macOS Darwin targets; asynchronous GitHub backup components exist. Native runtime, real remote credentials and fresh-host recovery remain gates |
+| Native platform and GitHub backup | Selected native process, Git-path, storage and resumable-transfer contracts run on Linux/macOS/Windows CI; asynchronous GitHub backup components exist. Full native adoption, real remote credentials and fresh-host recovery remain gates |
 | Supported deployment | Development/evaluation on Linux; production, native macOS/Windows, and multi-machine release gates remain open |
 
 The full contracts, limits, and missing gates live in [SCOPE.md](docs/SCOPE.md), [STORAGE.md](docs/STORAGE.md), and [GAP-CLOSURE.md](docs/GAP-CLOSURE.md). Keep an independent backup of valuable original work.
@@ -202,7 +204,7 @@ Record the tested revision and retain local test artifacts when reporting result
 ## Next gates
 
 - Real Codex and Claude workflows with a verified writer-coordination contract
-- Native Linux/macOS/Windows process, IPC, and filesystem acceptance tests
+- Complete native Linux/macOS/Windows IPC, adoption and filesystem acceptance beyond the selected CI contracts
 - Deployed TLS transport acceptance: certificate lifecycle, revocation, resumable transfer and multi-machine failure drills
 - Real remote backup and a fresh-host restore drill with explicit recovery coverage
 - Live confined model repair, conservative GC acceptance, storage-pressure and power-loss testing
