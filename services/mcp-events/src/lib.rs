@@ -255,7 +255,7 @@ mod tests {
         );
         auth.grant_project_local(u, "project1", 1000).unwrap();
         let projects = BTreeMap::from([("project1".into(), d.path().to_path_buf())]);
-        let ed = d.path().join("private-events");
+        let ed = d.path().canonicalize().unwrap().join("private-events");
         wipstash_transport::pairing_files::ensure_private_dir(&ed).unwrap();
         let events = Arc::new(
             EventService::open(

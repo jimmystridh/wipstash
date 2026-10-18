@@ -234,7 +234,7 @@ struct Fixture {
 impl Fixture {
     fn new(capacity: usize) -> Self {
         let dir = tempfile::tempdir().unwrap();
-        let private = dir.path().join("private");
+        let private = dir.path().canonicalize().unwrap().join("private");
         wipstash_transport::pairing_files::ensure_private_dir(&private).unwrap();
         let grants = Arc::new(Grants::new());
         let callback = Arc::new(MockCallback::new());
@@ -543,7 +543,12 @@ async fn overflow_expiry_and_restarts_keep_metadata_but_never_persist_event_bodi
     assert!(fixture.callback.records().is_empty());
     assert_eq!(fixture.events.health()["expired"], 7);
     assert_eq!(fixture.events.health()["queue_depth"], 0);
-    let path = fixture.dir.path().join("private/events.sqlite");
+    let path = fixture
+        .dir
+        .path()
+        .canonicalize()
+        .unwrap()
+        .join("private/events.sqlite");
     let Fixture {
         mut events,
         grants,

@@ -1138,7 +1138,7 @@ mod tests {
         tempfile::TempDir,
     ) {
         let dir = tempfile::tempdir().unwrap();
-        let private = dir.path().join("private");
+        let private = dir.path().canonicalize().unwrap().join("private");
         wipstash_transport::pairing_files::ensure_private_dir(&private).unwrap();
         let grants = Arc::new(Grants::new());
         let transport = Arc::new(MockTransport::new());
@@ -1477,7 +1477,10 @@ mod tests {
         events.ingest(transition("evt_lost"), NOW);
         drop(events);
         let restarted = EventService::open(
-            dir.path().join("private/events.sqlite"),
+            dir.path()
+                .canonicalize()
+                .unwrap()
+                .join("private/events.sqlite"),
             grants,
             transport.clone(),
             10,

@@ -44,7 +44,7 @@ fn config() -> AuthConfig {
 }
 fn private_path() -> (tempfile::TempDir, PathBuf) {
     let root = tempfile::tempdir().unwrap();
-    let private = root.path().join("private");
+    let private = root.path().canonicalize().unwrap().join("private");
     wipstash_transport::pairing_files::ensure_private_dir(&private).unwrap();
     (root, private.join("auth.sqlite"))
 }

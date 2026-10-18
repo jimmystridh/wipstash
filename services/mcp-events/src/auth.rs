@@ -1215,12 +1215,22 @@ mod tests {
     }
     fn private_path() -> (tempfile::TempDir, PathBuf) {
         let root = tempfile::tempdir().unwrap();
-        let private = root.path().join("private");
+        let private = root.path().canonicalize().unwrap().join("private");
         wipstash_transport::pairing_files::ensure_private_dir(&private).unwrap();
         let path = private.join("auth.sqlite");
         (root, path)
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn canonical_test_root_does_not_relax_private_symlink_rejection() {
+        let (root, path) = private_path();
+        let alias = root.path().canonicalize().unwrap().join("alias");
+        std::os::unix::fs::symlink(path.parent().unwrap(), &alias).unwrap();
+        assert!(AuthStore::open(alias.join("auth.sqlite"), config()).is_err());
+        assert!(!path.exists());
+        assert!(AuthStore::open(&path, config()).is_ok());
+    }
     #[test]
     fn numeric_identity_and_config_fail_closed() {
         assert!(GithubUserId::new(0).is_err());

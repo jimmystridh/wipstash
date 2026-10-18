@@ -113,3 +113,12 @@ Local restrictions excluded listener, process-kill and OS fault-injection paths.
 The normal CI gates remain intact; local filtered runs are not substitutes for
 those gates or cross-platform CI. Source-only observer and in-process mock
 callbacks must not be described as real browser/network/ChatGPT verification.
+
+### Cross-platform CI follow-up
+
+The first cross-platform run exposed macOS test-fixture paths through symlinked
+system temp ancestors. The production private-file helper correctly rejected
+those paths. New fixtures now canonicalize their temporary roots, matching the
+existing transport test approach; production no-follow checks are unchanged.
+An additional Unix regression verifies a deliberate symlink alias is still
+rejected. This adds one local Unix test; macOS verification awaits the new CI run.
