@@ -313,7 +313,7 @@ async fn setup(f: Flags) -> Result<()> {
     let b: Bootstrap = if bootstrap_path.exists() {
         load(&bootstrap_path)?
     } else {
-        let m = generate_bootstrap(&[server_name.clone()], now()?)?;
+        let m = generate_bootstrap(std::slice::from_ref(&server_name), now()?)?;
         let b = Bootstrap {
             ca_pem: m.ca_pem,
             ca_key_pem: m.ca_key_pem,
@@ -363,7 +363,7 @@ async fn setup(f: Flags) -> Result<()> {
         write_same(&dir.join(name), content.as_bytes())?;
     }
     private_directory(&dir.join("staging"), true)?;
-    let store = PairingStore::open(&dir.join("pairing.sqlite"))?;
+    let store = PairingStore::open(dir.join("pairing.sqlite"))?;
     store.initialize(&AuthorityBinding {
         project: p.project.clone(),
         authority: p.authority.clone(),
@@ -391,9 +391,9 @@ async fn device_command(command: &str, f: Flags) -> Result<()> {
     }
     let status = check_binding(&p, false).await?;
     let store = if command == "list" {
-        PairingStore::open_existing(&dir.join("pairing.sqlite"))?
+        PairingStore::open_existing(dir.join("pairing.sqlite"))?
     } else {
-        PairingStore::open(&dir.join("pairing.sqlite"))?
+        PairingStore::open(dir.join("pairing.sqlite"))?
     };
     match command {
         "list" => {
@@ -715,7 +715,7 @@ async fn verify_connection(dir: &Path, p: &Profile) -> Result<()> {
         match safe.as_str() {
             "authority_pin_mismatch"=>error("connectivity_authority_pin_mismatch; credentials retained"),
             "remote_rejected"=>error("connectivity_remote_rejected; check device revocation and project authorization"),
-            _=>error("connectivity_unverified; check address, TLS name and certificate validity; credentials retained"),
+            _=>error("connectivity_unverified; check address, TLS name, certificate validity and coordinator device authorization; credentials retained"),
         }
     })?;
     Ok(())
@@ -737,7 +737,7 @@ async fn serve(f: Flags) -> Result<()> {
     );
     let issuer = crate::pairing_crypto::Issuer::from_pem(&ca, &key, now()?)?;
     let enrollment = std::sync::Arc::new(crate::enrollment::EnrollmentService::new(
-        PairingStore::open(&dir.join("pairing.sqlite"))?,
+        PairingStore::open(dir.join("pairing.sqlite"))?,
         issuer,
         crate::certs(&dir.join("server.pem"))?,
         crate::KeySource::File(dir.join("server-key.pem")).load()?,
@@ -1032,7 +1032,10 @@ mod tests {
         let before = read_private(&path).unwrap();
         inspect(
             Flags::parse(
-                &["--directory".into(), root.as_path().to_str().unwrap().into()],
+                &[
+                    "--directory".into(),
+                    root.as_path().to_str().unwrap().into(),
+                ],
                 &["--directory"],
             )
             .unwrap(),

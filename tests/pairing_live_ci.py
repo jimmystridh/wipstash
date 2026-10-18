@@ -18,6 +18,7 @@ from pathlib import Path
 import signal
 import socket
 import sqlite3
+import ssl
 import subprocess
 import sys
 import tempfile
@@ -185,16 +186,43 @@ class Runner:
         require(not reader.is_alive(), "serve_stderr_drain_timeout")
         proc.stderr.close()
 
-    def doctor(self, profile, accepted=True):
-        out, err = self.cli("doctor_online", "doctor", "--directory", profile,
-                            "--online", expected=accepted)
-        if accepted:
-            require("Authenticated read-only connectivity verified now" in out,
-                    "doctor_missing_live_confirmation")
-        else:
-            # A timeout, dead listener, or broken local profile is not evidence
-            # of revocation. Require the server's specific rejection category.
-            require("connectivity_remote_rejected" in err, "denial_not_authorization_rejection")
+    def doctor(self, profile):
+        out, _ = self.cli("doctor_online", "doctor", "--directory", profile,
+                          "--online")
+        require("Authenticated read-only connectivity verified now" in out,
+                "doctor_missing_live_confirmation")
+
+    def denied_doctor(self, profile, authority, healthy_profile):
+        # The service rejects unauthorized certificates immediately after TLS,
+        # before HTTP. Its intentional close can map to connectivity_unverified.
+        # Establish the exact certificate's authoritative denial state and use
+        # fresh healthy requests on both sides; failure alone proves nothing.
+        self.doctor(healthy_profile)
+        certificate = ssl.PEM_cert_to_DER_cert(
+            (profile / "client.pem").read_text(encoding="ascii"))
+        fingerprint = hashlib.sha256(certificate).hexdigest()
+        with contextlib.closing(sqlite3.connect(
+                (authority / "pairing.sqlite").as_uri() + "?mode=ro", uri=True,
+                timeout=self.remaining(5))) as db, db:
+            row = db.execute(
+                "SELECT c.revoked,c.generation,c.not_after,d.state,d.generation "
+                "FROM certificates c JOIN devices d ON d.device=c.device "
+                "WHERE c.fingerprint=?", (fingerprint,)).fetchone()
+        require(row is not None, "denied_certificate_missing_from_authority")
+        revoked, generation, not_after, device_state, active_generation = row
+        require(not_after > int(time.time()), "negative_certificate_expired")
+        require(revoked == 1 or generation < active_generation,
+                "certificate_not_revoked_or_superseded")
+        require(device_state == "revoked" or
+                (device_state == "active" and generation < active_generation),
+                "device_state_does_not_deny_certificate")
+        _, err = self.cli("doctor_online_denied", "doctor", "--directory", profile,
+                          "--online", expected=False)
+        require("connectivity_timeout" not in err and
+                "connectivity_authority_pin_mismatch" not in err and
+                ("connectivity_remote_rejected" in err or "connectivity_unverified" in err),
+                "denial_not_expected_close_or_rejection")
+        self.doctor(healthy_profile)
 
     def snapshot(self, state):
         status = self.engine_request(state, "sync_status")
@@ -301,7 +329,7 @@ class Runner:
             self.steps.append("canceled_invite_denied_active_certificate_preserved")
 
             self.cli("revoke", "device", "revoke", "--directory", authority, "--device", "alpha")
-            self.doctor(profiles["alpha"], accepted=False)
+            self.denied_doctor(profiles["alpha"], authority, profiles["bravo"])
             for name in ("bravo", "charlie", "delta"):
                 self.doctor(profiles[name])
             self.steps.append("revoked_client_denied_other_three_accepted")
@@ -312,7 +340,7 @@ class Runner:
             rotated = root / "charlie-generation-2"
             self.cli("replacement_join", "join", "--directory", rotated, "--state", states["charlie"],
                      "--engine", self.engine, "--invite-file", replacement)
-            self.doctor(profiles["charlie"], accepted=False)
+            self.denied_doctor(profiles["charlie"], authority, profiles["bravo"])
             self.doctor(rotated)
             require(self.snapshot(states["charlie"]) == snapshots["charlie"],
                     "rotation_changed_engine_identity_or_source_state")
@@ -335,8 +363,8 @@ class Runner:
                     time.sleep(min(1, self.remaining()))
             for profile in (profiles["bravo"], profiles["delta"], rotated):
                 self.doctor(profile)
-            self.doctor(profiles["alpha"], accepted=False)
-            self.doctor(profiles["charlie"], accepted=False)
+            self.denied_doctor(profiles["alpha"], authority, profiles["bravo"])
+            self.denied_doctor(profiles["charlie"], authority, profiles["bravo"])
             self.steps.append("owned_server_restart_persists_acceptance_and_revocation")
             for name in profiles:
                 require(self.snapshot(states[name]) == snapshots[name], "pairing_changed_client_source_state")

@@ -76,13 +76,17 @@ async fn wrong_pin_sends_no_http_or_invite_bytes() {
     use std::sync::atomic::{AtomicUsize, Ordering};
     struct SecretProbe(Arc<AtomicUsize>);
     impl Serialize for SecretProbe {
-        fn serialize<S: serde::Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+        fn serialize<S: serde::Serializer>(
+            &self,
+            serializer: S,
+        ) -> std::result::Result<S::Ok, S::Error> {
             self.0.fetch_add(1, Ordering::SeqCst);
             serializer.serialize_str("synthetic-secret-must-never-be-sent")
         }
     }
     let fixture = TlsFixture::new();
-    let client = EnrollmentClient::new(fixture.roots(), "enroll.test".into(), "00".repeat(32)).unwrap();
+    let client =
+        EnrollmentClient::new(fixture.roots(), "enroll.test".into(), "00".repeat(32)).unwrap();
     let (client_io, server_io) = tokio::io::duplex(65536);
     let tls = fixture.server();
     let observed = tokio::spawn(async move {
@@ -96,14 +100,20 @@ async fn wrong_pin_sends_no_http_or_invite_bytes() {
             Err(error) => {
                 // The client can close after pin validation while the server is
                 // still finishing its handshake/session-ticket writes.
-                assert!(matches!(error.kind(), std::io::ErrorKind::BrokenPipe
-                    | std::io::ErrorKind::UnexpectedEof | std::io::ErrorKind::ConnectionReset));
+                assert!(matches!(
+                    error.kind(),
+                    std::io::ErrorKind::BrokenPipe
+                        | std::io::ErrorKind::UnexpectedEof
+                        | std::io::ErrorKind::ConnectionReset
+                ));
                 Vec::new()
             }
         }
     });
     let serializations = Arc::new(AtomicUsize::new(0));
-    let result: Result<Value> = client.request_stream(client_io, ENROLL, &SecretProbe(serializations.clone())).await;
+    let result: Result<Value> = client
+        .request_stream(client_io, ENROLL, &SecretProbe(serializations.clone()))
+        .await;
     assert_eq!(result.unwrap_err().to_string(), "enrollment_pin_mismatch");
     assert_eq!(serializations.load(Ordering::SeqCst), 0);
     assert!(observed.await.unwrap().is_empty());

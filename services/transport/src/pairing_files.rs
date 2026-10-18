@@ -774,10 +774,7 @@ mod tests {
             let final_path = dir.join("final");
             let fail = |current| {
                 if current == point {
-                    Err(io::Error::new(
-                        io::ErrorKind::Other,
-                        "synthetic injected fault",
-                    ))
+                    Err(io::Error::other("synthetic injected fault"))
                 } else {
                     Ok(())
                 }
