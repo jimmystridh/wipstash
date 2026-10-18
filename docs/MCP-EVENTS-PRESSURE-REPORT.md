@@ -182,3 +182,16 @@ passed (65 unit, one CLI pressure, five delivery, two SQLite-runtime). The final
 delivery campaign measurements were 4.001 seconds and 0.386 seconds respectively;
 the auth campaign completed all 96 rounds in 11.709 seconds. Package formatter
 check, strict all-target Clippy and `git diff --check` also passed.
+
+### Native Windows calibration observed (2026-10-18)
+
+At source `483f70750faeffba607ef1ba4318228bab5daf63`, CI run
+`39143717903` completed the full Windows MCP Events contract step. The
+three-seed delivery pressure campaign completed in 212.768 seconds and the
+three-seed generation races in 58.884 seconds. Both logged that their original
+45/30-second performance references were exceeded; all workload and correctness
+assertions passed within the separate 300-second liveness guard. Auth pressure
+completed all 96 rounds in 140.266 seconds. This is completion evidence, not a
+performance improvement. The overall job subsequently failed a distinct
+30-second preparation/submission barrier in the core conflict-stress harness;
+this run was not an all-green release gate.

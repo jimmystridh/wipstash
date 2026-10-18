@@ -49,6 +49,26 @@ def observe(scope, request, response):
                     DISTINCT['integrated_proposals'].add((scope, outcome['proposal']))
 
 
+def prepare_and_submit_wave(items, prepare, submit):
+    """Keep durable preparation outside the four-actor submission gate."""
+    items = list(items)
+    if not 1 <= len(items) <= 4:
+        raise ValueError('A concurrent wave requires one to four actors')
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        # Each preparation CLI request retains Harness.command's 40-second
+        # bound. Join all preparations before starting the 30-second gate:
+        # serialized durable Git work must not consume a peer's gate budget.
+        # Preparation exceptions propagate unchanged and prevent submission.
+        prepared = list(pool.map(prepare, items))
+        gate = threading.Barrier(len(prepared))
+
+        def submit_ready(item):
+            gate.wait(timeout=30)
+            return submit(item)
+
+        return list(pool.map(submit_ready, prepared))
+
+
 class ConflictStress(unittest.TestCase):
     def setUp(self):
         # Keep fixtures beneath Windows MAX_PATH without weakening production guards.
@@ -307,18 +327,21 @@ class ConflictStress(unittest.TestCase):
                     break
                 head = self.head()
                 baseline = self.h.git(self.repo(), 'show', head + ':notes/shared.txt') + '\n'
-                barrier = threading.Barrier(len(pending))
-                def resolve_actor(item):
+                def prepare_resolution(item):
                     owner, proposal = item
                     resolution = self.open_resolution(owner, proposal, 'wave-attempt-' + str(attempt))
                     self.assertEqual(head, resolution[2])
                     write(resolution[1], 'notes/shared.txt', baseline + 'resolved-' + owner + '\n')
                     request = self.submit_request(owner, proposal, resolution,
                                                   'wave-submit-' + owner + '-' + str(attempt))
-                    barrier.wait(timeout=30)
+                    return owner, request
+
+                def submit_resolution(item):
+                    owner, request = item
                     return owner, self.req(**request)['proposal']
-                with ThreadPoolExecutor(max_workers=4) as pool:
-                    submitted = dict(pool.map(resolve_actor, pending.items()))
+
+                submitted = dict(prepare_and_submit_wave(
+                    pending.items(), prepare_resolution, submit_resolution))
                 self.assertEqual(len(pending), len(set(submitted.values())))
                 outcomes = self.req(op='integrate')['outcomes']
                 self.assertEqual(len(submitted), len(outcomes))
