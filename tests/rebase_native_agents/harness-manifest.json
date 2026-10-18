@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "campaign": "32-feature-expense-ledger-native-after",
+  "candidate_binary_sha256": "17f406790e388a36791228012b1b3cdc1f0fd496e1d816b58ccee264dcaf3088",
+  "baseline_binary_sha256": "ded60ad5c3a533d01cf646228f03f38e7e3aa5b45941da115f5e6429233d9a51",
+  "observer_binary_sha256": "ef6048fb9de2637119f6d30b55c4a98ce991df9f3a219a4582b6e0673d0d638d",
+  "spec_sha256": "46d01d465de5271b977b7c6c1e8c617564053a660672df991be5b6dcf57cba1f",
+  "oracle_sha256": "7688a757fcf87e128c4ddaf05673c670a361d2dd62fba1e83967671fe2034c50",
+  "baseline_public_tree": "d9779a88c5b6481d5c0357f52c70cd58e1d6a548",
+  "blind_final_public_head": "d074b57187570bdbe90a12a50969c6590b3c0e7a",
+  "input_hashes": {
+    "SPEC.md": "46d01d465de5271b977b7c6c1e8c617564053a660672df991be5b6dcf57cba1f",
+    "source/report.py": "594f9c318dfcb6eb0b82feef6e6f2f449a1c45272dfd6a445f69a3872972ae58",
+    "source/tests/test_baseline.py": "94f6b60f9087f2198ffe3e31a4254bd959a990803964c05fbe5ee35cd848ca86",
+    "source/.gitignore": "57db6342bb193c3763dd834369934401386d7614303a16ba2792c35c2dece2c5",
+    "harness/actor_api.py": "35b8ce4c5e7655d18ec814accd3c6e4632184b2e8d5371246f48f3ae0d3dc688",
+    "harness/coordinator.py": "5ddbe1d788fe62d99d366a67a54595ccf9245a8d49b59dcba8f24f429a82d587",
+    "harness/analyze.py": "ed35f0d314fa22ce754181756d30f997d6b78942c9fcf9af531aeeee64a1d15e",
+    "observer/src/main.rs": "567beadb95820ddbd34b3d8585f05191bee8e6a55f3050529f6852035f30ce25"
+  },
+  "actual_source_library_sha256": "b6bc4391d9d0d4e0547ed11ce62aace843ae00338588e54f66def6cb9a8b2c0c",
+  "protocol": {
+    "genuine_new_native_agents": 4,
+    "features_per_actor": 8,
+    "one_feature_per_publication_wave": true,
+    "common_go_after_all_ready": true,
+    "automatic_integration_interval_seconds": 0.35,
+    "max_proposals_per_integration": 1,
+    "source_poll_interval_ms": 20,
+    "active_bound_seconds": 2700,
+    "drain_bound_seconds": 300,
+    "maximum_submitted_resolution_revisions_per_lineage": 3,
+    "sealed_private_checkpoint_plus_unsaved_wip_per_original": true,
+    "candidate_expected_head_must_equal_opened_captured_head": true,
+    "author_tests": "python3 -m unittest discover -s tests -v",
+    "independent_oracle_frozen_before_both_runs": true,
+    "normal_early_stop": "All four actors terminal and accepted queue drained; observer stops by file sentinel.",
+    "no_scripted_feature_or_conflict_solutions": true,
+    "no_per_integration_coaching": true,
+    "core_policy_checks_configured": false
+  },
+  "privacy_audit_scope": [
+    "All 32 original private manifests and checkpoint-tracked files",
+    "All unpublished original private checkpoint OIDs checked absent from public store",
+    "Every public object/blob enumerated and scanned",
+    "Every public ref tree checked for excluded/private paths"
+  ],
+  "reproducibility_notes": [
+    "Native agents author fresh code; a replay is not deterministic.",
+    "Hash-pinned executable copies are used throughout; Source observer links actual product library.",
+    "Analyze.py is byte-identical to BEFORE, preserving interpolation and metric definitions.",
+    "Raw/private state, actor handoffs, IDs, command logs and machine-specific paths are not part of this publication."
+  ]
+}
