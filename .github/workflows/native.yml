@@ -91,29 +91,6 @@ jobs:
           python tests/test_agent_conflict_stress_harness.py
       - name: Read-only MCP Events and GitHub identity contracts
         run: cargo test --locked --manifest-path services/mcp-events/Cargo.toml -- --show-output
-      - name: Four-actor agent conflict stress campaign
-        env:
-          WIPSTASH_CONFLICT_STRESS_CI: '1'
-          WIPSTASH_SQLITE_DIAGNOSTICS: '1'
-        run: |
-          seeds="731927"
-          if [[ "${{ runner.os }}" == "Linux" || "${{ runner.os }}" == "Windows" ]]; then
-            seeds="731927 991337 20261018"
-          fi
-          for seed in $seeds; do
-            python tests/agent_conflict_stress.py --seed "$seed" --artifacts "evidence/agent-conflict/$seed"
-          done
-      - name: Save bounded agent conflict evidence
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: agent-conflict-${{ runner.os }}-${{ github.sha }}
-          path: |
-            evidence/agent-conflict/731927/summary.json
-            evidence/agent-conflict/991337/summary.json
-            evidence/agent-conflict/20261018/summary.json
-          if-no-files-found: warn
-          retention-days: 7
       - name: Native platform contracts
         run: cargo test --locked --manifest-path crates/platform/Cargo.toml
       - name: Read-only inspector contracts
@@ -210,6 +187,50 @@ jobs:
           cargo clippy --locked --manifest-path services/inspector/Cargo.toml --all-targets -- -D warnings
           cargo fmt --manifest-path services/mcp-events/Cargo.toml --check
           cargo clippy --locked --manifest-path services/mcp-events/Cargo.toml --all-targets -- -D warnings
+  conflict-stress:
+    name: Agent conflict stress (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: '1.99.1'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Build core for isolated conflict stress
+        run: cargo build --locked
+      - name: Four-actor agent conflict stress campaign
+        env:
+          WIPSTASH_CONFLICT_STRESS_CI: '1'
+          WIPSTASH_SQLITE_DIAGNOSTICS: '1'
+        run: |
+          seeds="731927"
+          if [[ "${{ runner.os }}" == "Linux" || "${{ runner.os }}" == "Windows" ]]; then
+            seeds="731927 991337 20261018"
+          fi
+          for seed in $seeds; do
+            python tests/agent_conflict_stress.py --seed "$seed" --artifacts "evidence/agent-conflict/$seed"
+          done
+      - name: Save bounded agent conflict evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-conflict-${{ runner.os }}-${{ github.sha }}
+          path: |
+            evidence/agent-conflict/731927/summary.json
+            evidence/agent-conflict/991337/summary.json
+            evidence/agent-conflict/20261018/summary.json
+          if-no-files-found: warn
+          retention-days: 7
   inspector-browser:
     name: Dioxus WASM and browser inspection
     runs-on: ubuntu-latest
