@@ -61,7 +61,7 @@ impl GithubConfig {
         format!("refs/heads/{}/", self.namespace)
     }
 }
-fn git(repo: &Path, args: &[String]) -> Result<Vec<u8>> {
+fn git_command(repo: &Path, args: &[String], protocol: Option<&str>) -> Result<Command> {
     // The managed spool/fresh-store repository is the only execution cwd. Never
     // execute Git in an arbitrary source checkout or inherit credentials/tracing.
     if repo.join("config").exists()
@@ -83,7 +83,7 @@ fn git(repo: &Path, args: &[String]) -> Result<Vec<u8>> {
         .env("GIT_CONFIG_COUNT", "0")
         .env("GIT_NO_REPLACE_OBJECTS", "1")
         .arg("--git-dir")
-        .arg(repo)
+        .arg(wipstash_platform::git_path::argument(repo).map_err(|_| "unsupported_git_path")?)
         .args([
             "-c",
             if cfg!(windows) {
@@ -93,8 +93,6 @@ fn git(repo: &Path, args: &[String]) -> Result<Vec<u8>> {
             },
             "-c",
             "protocol.allow=never",
-            "-c",
-            "protocol.https.allow=always",
             "-c",
             "http.sslVerify=true",
             "-c",
@@ -130,6 +128,17 @@ fn git(repo: &Path, args: &[String]) -> Result<Vec<u8>> {
             c.env(key, v);
         }
     }
+    if let Some(protocol) = protocol {
+        // This allowlist also defeats per-protocol config and URL rewrites.
+        c.env("GIT_ALLOW_PROTOCOL", protocol);
+    }
+    Ok(c)
+}
+fn git(repo: &Path, args: &[String]) -> Result<Vec<u8>> {
+    git_transport(repo, args, None)
+}
+fn git_transport(repo: &Path, args: &[String], protocol: Option<&str>) -> Result<Vec<u8>> {
+    let c = git_command(repo, args, protocol)?;
     let executable = std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
         .filter(|p| p.is_absolute())
         .map(|p| p.join(if cfg!(windows) { "git.exe" } else { "git" }))
@@ -265,6 +274,8 @@ impl Github {
     fn args(&self) -> Vec<String> {
         vec![
             "-c".into(),
+            "protocol.https.allow=always".into(),
+            "-c".into(),
             format!("credential.helper={}", self.config.credential_helper),
         ]
     }
@@ -281,7 +292,7 @@ impl Remote for Github {
             &self.config.url()?,
             &format!("{prefix}*"),
         ]));
-        parse_refs(&git(repo, &a)?, prefix)
+        parse_refs(&git_transport(repo, &a, Some("https"))?, prefix)
     }
     fn push(&mut self, repo: &Path, expected: &Refs, next: &Refs) -> Result<()> {
         if next.keys().any(|r| !allowed_ref(r, &self.config.prefix())) {
@@ -306,7 +317,7 @@ impl Remote for Github {
         for (r, o) in next {
             a.push(format!("{o}:{r}"));
         }
-        git(repo, &a)?;
+        git_transport(repo, &a, Some("https"))?;
         Ok(())
     }
     fn fetch(&mut self, repo: &Path, refs: &Refs) -> Result<()> {
@@ -324,7 +335,7 @@ impl Remote for Github {
             }
             a.push(format!("{o}:{r}"));
         }
-        git(repo, &a)?;
+        git_transport(repo, &a, Some("https"))?;
         Ok(())
     }
 }
@@ -367,34 +378,43 @@ impl Outbox {
     /// contacts GitHub. Source refs are copied into private spool pins before intent.
     pub fn enqueue(&mut self, source: &Path) -> Result<Snapshot> {
         let source = fs::canonicalize(source).map_err(|_| "invalid_public_source")?;
-        let source = source.to_str().ok_or("invalid_public_source")?;
+        let process_source =
+            wipstash_platform::git_path::argument(&source).map_err(|_| "unsupported_git_path")?;
+        let source = process_source.to_str().ok_or("invalid_public_source")?;
         let prefix = "refs/heads/wipstash/";
-        let bytes = git(
+        let bytes = git_transport(
             &self.spool,
             &strings(&[
                 "-c",
                 "protocol.file.allow=always",
+                "-c",
+                "protocol.https.allow=never",
                 "ls-remote",
                 "--refs",
+                "--",
                 source,
                 &format!("{prefix}*"),
             ]),
+            Some("file"),
         )?;
         let source_refs = parse_refs(&bytes, prefix)?;
         let mut a = strings(&[
             "-c",
             "protocol.file.allow=always",
+            "-c",
+            "protocol.https.allow=never",
             "fetch",
             "--no-tags",
             "--no-write-fetch-head",
             "--recurse-submodules=no",
+            "--",
             source,
         ]);
         // Object-specific fetch avoids importing source config, tags or private refs.
         for o in source_refs.values() {
             a.push(o.clone());
         }
-        git(&self.spool, &a)?;
+        git_transport(&self.spool, &a, Some("file"))?;
         let refs = source_refs
             .iter()
             .map(|(r, o)| (r.replacen(prefix, &self.config.prefix(), 1), o.clone()))
@@ -1450,6 +1470,51 @@ mod tests {
             b"public"
         );
     }
+    #[test]
+    fn canonical_local_enqueue_preserves_identity() {
+        let f = Fixture::new();
+        let moved_source = f._dir.path().join("source with spaces.git");
+        fs::rename(&f.source, &moved_source).unwrap();
+        let source = fs::canonicalize(&moved_source).unwrap();
+        let out = f._dir.path().join("canonical outbox with spaces");
+        fs::create_dir(&out).unwrap();
+        let out = fs::canonicalize(out).unwrap();
+        let mut queue = Outbox::open(&out, config()).unwrap();
+        let snapshot = queue.enqueue(&source).unwrap();
+        assert_eq!(snapshot.refs["refs/heads/project/integration"], f.root);
+        assert_eq!(queue.spool, out.join("public.git"));
+        assert_eq!(fs::canonicalize(&moved_source).unwrap(), source);
+    }
+    #[test]
+    fn git_protocol_defaults_and_github_override_are_separate() {
+        let f = Fixture::new();
+        // Read effective command configuration only: no transport or credentials.
+        let query = strings(&["config", "--get-regexp", "^protocol\\."]);
+        let defaults = String::from_utf8(git(&f.source, &query).unwrap()).unwrap();
+        assert_eq!(defaults, "protocol.allow never\n");
+        let github = Github { config: config() };
+        let mut args = github.args();
+        args.extend(query);
+        let configured = String::from_utf8(git(&f.source, &args).unwrap()).unwrap();
+        assert!(configured.contains("protocol.allow never\n"));
+        assert!(configured.contains("protocol.https.allow always\n"));
+        assert!(!configured.contains("protocol.file.allow"));
+        for protocol in ["file", "https"] {
+            let command = git_command(&f.source, &[], Some(protocol)).unwrap();
+            assert_eq!(
+                command
+                    .get_envs()
+                    .find(|(key, _)| *key == "GIT_ALLOW_PROTOCOL")
+                    .unwrap()
+                    .1,
+                Some(std::ffi::OsStr::new(protocol))
+            );
+        }
+        assert_eq!(
+            github.config.url().unwrap(),
+            "https://github.com/fixture/public.git"
+        );
+    }
     fn config() -> GithubConfig {
         GithubConfig {
             owner: "fixture".into(),
@@ -1461,7 +1526,7 @@ mod tests {
     fn input(repo: &Path, args: &[&str], bytes: &[u8]) -> String {
         let mut c = Command::new("git");
         c.arg("--git-dir")
-            .arg(repo)
+            .arg(wipstash_platform::git_path::argument(repo).unwrap())
             .args(args)
             .env("GIT_AUTHOR_NAME", "fixture")
             .env("GIT_AUTHOR_EMAIL", "fixture@example.invalid")

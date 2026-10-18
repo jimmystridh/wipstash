@@ -364,6 +364,34 @@ impl Git {
     pub fn run(&self, args: &[&str], input: Option<&[u8]>) -> Result<Vec<u8>> {
         checked(execute(self.cmd(args)?, input)?)
     }
+    /// Local-only Git transport boundary. Keep canonical filesystem identities
+    /// separate from Git's process representation and never infer a remote URL.
+    pub fn run_local_repository(
+        &self,
+        args: &[&str],
+        repository: &Path,
+        trailing: &[&str],
+    ) -> Result<Vec<u8>> {
+        let canonical =
+            fs::canonicalize(repository).map_err(|e| format!("local_repository_path: {e}"))?;
+        if !canonical.is_dir() {
+            return Err("local_repository_path: directory required".into());
+        }
+        let argument = wipstash_platform::git_path::argument(&canonical).map_err(err)?;
+        let mut command = self.cmd(&[
+            "-c",
+            "protocol.allow=never",
+            "-c",
+            "protocol.file.allow=always",
+        ])?;
+        // The environment allowlist takes precedence over per-protocol config
+        // and URL rewrites in a repository; a local-only call cannot use SSH,
+        // HTTPS, remote helpers or other transports even if config permits them.
+        command.env("GIT_ALLOW_PROTOCOL", "file");
+        command.args(args).arg("--").arg(argument).args(trailing);
+        checked(execute(command, None)?)
+    }
+
     fn object_size(&self, object: &str) -> Result<u64> {
         valid_oid(object)?;
         String::from_utf8(self.run(&["cat-file", "-s", object], None)?)
@@ -581,7 +609,9 @@ impl Git {
                 "-q",
                 "--",
             ]);
-        let mut name = path.as_os_str().to_os_string();
+        let mut name = wipstash_platform::git_path::argument(path)
+            .map_err(err)?
+            .into_os_string();
         if is_dir {
             name.push("/");
         }
@@ -813,6 +843,41 @@ mod tests {
         assert!(real_directory(&file).is_err());
         assert!(real_directory(&file.join("descendant")).is_err());
         assert!(real_directory(&root.join("missing")).is_err());
+    }
+
+    #[test]
+    fn local_repository_transport_blocks_configured_remote_helpers() {
+        let t = Temp::new();
+        let source = Git::init(&t.0.join("source.git")).unwrap();
+        let destination = Git::init(&t.0.join("destination.git")).unwrap();
+        assert!(destination
+            .run_local_repository(&["ls-remote", "--refs"], &source.repo, &[])
+            .unwrap()
+            .is_empty());
+        let argument = wipstash_platform::git_path::argument(&source.repo).unwrap();
+        // A harmless helper string requires no network even if this guard were
+        // broken; the assertion proves Git rejects its transport before launch.
+        destination
+            .run(&["config", "protocol.ext.allow", "always"], None)
+            .unwrap();
+        destination
+            .run(
+                &[
+                    "config",
+                    "url.ext::git --version.insteadOf",
+                    argument.to_str().unwrap(),
+                ],
+                None,
+            )
+            .unwrap();
+        let failure = destination
+            .run_local_repository(&["ls-remote", "--refs"], &source.repo, &[])
+            .unwrap_err();
+        assert!(failure.contains("transport 'ext' not allowed"), "{failure}");
+        assert!(destination
+            .run_local_repository(&["ls-remote"], Path::new("ssh://example.invalid/repo"), &[])
+            .unwrap_err()
+            .starts_with("local_repository_path:"));
     }
 
     #[test]

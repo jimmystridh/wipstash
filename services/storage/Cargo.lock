@@ -511,6 +511,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "wipstash-platform"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "windows-sys",
+ "zeroize",
+]
+
+[[package]]
 name = "wipstash-storage"
 version = "0.1.0"
 dependencies = [
@@ -520,7 +529,14 @@ dependencies = [
  "serde_json",
  "sha2",
  "tempfile",
+ "wipstash-platform",
 ]
+
+[[package]]
+name = "zeroize"
+version = "1.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e13084392c5e4bc371903e2935a5eaeed24905a7511356b883835e18a78f6879"
 
 [[package]]
 name = "zmij"

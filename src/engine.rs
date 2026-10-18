@@ -92,17 +92,15 @@ fn generation(r: &Value, w: &Workspace) -> R<()> {
 }
 fn transfer(from: &Git, to: &Git, oid: &str, reference: &str) -> R<()> {
     // A reachable public root is the only fetch want; private ancestry is never a parent.
-    to.run(
+    to.run_local_repository(
         &[
-            "-c",
-            "protocol.file.allow=always",
             "fetch",
             "--no-tags",
             "--no-write-fetch-head",
-            from.repo.to_str().ok_or("unsupported_path")?,
-            &format!("{oid}:{reference}"),
+            "--recurse-submodules=no",
         ],
-        None,
+        &from.repo,
+        &[&format!("{oid}:{reference}")],
     )?;
     Ok(())
 }
@@ -1190,6 +1188,20 @@ mod regression_tests {
             let _ = fs::remove_dir_all(&self.0);
         }
     }
+    #[test]
+    fn canonical_local_repository_transfer_opens_two_workspaces() {
+        let p = Project::new();
+        let state = fs::canonicalize(p.0.join("state")).unwrap();
+        let public = coordinator(&state).head(HEAD).unwrap();
+        for workspace in ["A", "B"] {
+            assert_eq!(local(&state, workspace).head(HEAD).unwrap(), public);
+            assert_eq!(
+                fs::read(p.0.join(workspace).join("a")).unwrap(),
+                b"original"
+            );
+        }
+    }
+
     #[test]
     fn interrupted_command_is_never_replayed_and_fences_workspace() {
         let p = Project::new();

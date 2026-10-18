@@ -585,11 +585,16 @@ impl View {
                 if cfg!(windows) { "NUL" } else { "/dev/null" },
             )
             .env("GIT_NO_REPLACE_OBJECTS", "1")
+            .env("GIT_NO_LAZY_FETCH", "1")
+            .env("GIT_ALLOW_PROTOCOL", "file")
             .env("GIT_TERMINAL_PROMPT", "0");
         c.arg("--no-pager")
             .arg("--git-dir")
-            .arg(self.dir.path())
-            .env("GIT_OBJECT_DIRECTORY", &self.objects)
+            .arg(wipstash_platform::git_path::argument(self.dir.path()).map_err(err)?)
+            .env(
+                "GIT_OBJECT_DIRECTORY",
+                wipstash_platform::git_path::argument(&self.objects).map_err(err)?,
+            )
             .args(args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -1090,6 +1095,19 @@ mod tests {
         assert!(plan(d.path(), "coordinator.git", 86400)
             .unwrap_err()
             .contains("recovery required"));
+    }
+    #[test]
+    fn canonical_git_view_reads_local_objects() {
+        let d = fixture();
+        let object = blob(d.path(), b"canonical storage object");
+        let repo = fs::canonicalize(d.path().join("coordinator.git")).unwrap();
+        let view = View::new(&repo).unwrap();
+        assert_eq!(
+            view.run(&["cat-file", "blob", &object], "").unwrap(),
+            "canonical storage object"
+        );
+        // The OS identity stays canonical; only process arguments are adapted.
+        assert_eq!(view.objects, repo.join("objects"));
     }
     #[test]
     fn canonical_roots_preserve_admission_checks() {

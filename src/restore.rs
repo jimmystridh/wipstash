@@ -325,19 +325,16 @@ pub fn restore(state: &Path, db: &Connection, destination: &Path) -> R<Value> {
             map.iter()
                 .map(|(id, object)| format!("{object}:refs/wipstash/proposals/{id}")),
         );
-        let mut args = vec![
-            "-c",
-            "protocol.allow=never",
-            "-c",
-            "protocol.file.allow=always",
-            "fetch",
-            "--no-tags",
-            "--no-write-fetch-head",
-            "--recurse-submodules=no",
-            source_text,
-        ];
-        args.extend(specs.iter().map(String::as_str));
-        git.run(&args, None)?;
+        git.run_local_repository(
+            &[
+                "fetch",
+                "--no-tags",
+                "--no-write-fetch-head",
+                "--recurse-submodules=no",
+            ],
+            &source,
+            &specs.iter().map(String::as_str).collect::<Vec<_>>(),
+        )?;
         git.run(&["cat-file", "-e", &format!("{root}^{{commit}}")], None)?;
         git.run(&["fsck", "--strict", "--no-reflogs"], None)?;
         for (_, kind, data) in &events {

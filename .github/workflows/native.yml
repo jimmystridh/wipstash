@@ -37,6 +37,8 @@ jobs:
           cargo test --locked policy::command_contract_tests
           cargo test --locked git::tests::canonical_directory_components_include_root_not_bare_prefix
           cargo test --locked git::tests::exact_roundtrip_and_exclusions
+          cargo test --locked canonical_local_repository_transfer_opens_two_workspaces
+          cargo test --locked local_repository_transport_blocks_configured_remote_helpers
           python tests/mcp_protocol.py
       - name: Native platform contracts
         run: cargo test --locked --manifest-path crates/platform/Cargo.toml
@@ -44,14 +46,20 @@ jobs:
         run: cargo test --locked --manifest-path services/inspector/Cargo.toml
       - name: Build authenticated transport
         run: cargo build --locked --manifest-path services/transport/Cargo.toml
-      - name: Native storage admission
-        run: cargo test --locked --manifest-path services/storage/Cargo.toml canonical_roots_preserve_admission_checks
+      - name: Native storage admission and Git paths
+        run: |
+          cargo test --locked --manifest-path services/storage/Cargo.toml canonical_roots_preserve_admission_checks
+          cargo test --locked --manifest-path services/storage/Cargo.toml canonical_git_view_reads_local_objects
       - name: Native resumable storage contracts
         run: |
           cargo test --locked --manifest-path services/transport/Cargo.toml --lib resumable
           cargo test --locked --manifest-path services/transport/Cargo.toml --test resumable
       - name: Build remote backup component
         run: cargo build --locked --manifest-path services/backup/Cargo.toml
+      - name: Native backup local paths and protocol boundaries
+        run: |
+          cargo test --locked --manifest-path services/backup/Cargo.toml canonical_local_enqueue_preserves_identity
+          cargo test --locked --manifest-path services/backup/Cargo.toml git_protocol_defaults_and_github_override_are_separate
       - name: Verify linked SQLite runtime on every platform
         run: |
           for manifest in Cargo.toml services/storage/Cargo.toml services/backup/Cargo.toml services/transport/Cargo.toml simulations/wan/Cargo.toml services/inspector/Cargo.toml; do

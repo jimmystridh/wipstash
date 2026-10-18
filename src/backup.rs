@@ -1183,19 +1183,10 @@ fn metadata_commit(g: &Git, bytes: &[u8], parent: Option<&String>) -> R<String> 
     )
 }
 fn remote_refs(g: &Git, destination: &str) -> R<(Option<String>, Option<String>)> {
-    let bytes = g.run(
-        &[
-            "-c",
-            "protocol.allow=never",
-            "-c",
-            "protocol.file.allow=always",
-            "ls-remote",
-            "--refs",
-            destination,
-            ROOT,
-            META,
-        ],
-        None,
+    let bytes = g.run_local_repository(
+        &["ls-remote", "--refs"],
+        Path::new(destination),
+        &[ROOT, META],
     )?;
     let text = std::str::from_utf8(&bytes).map_err(|e| e.to_string())?;
     let (mut root, mut meta) = (None, None);
@@ -1246,18 +1237,10 @@ fn parse_proposals(bytes: &[u8], prefix: &str) -> R<ProposalMap> {
     Ok(map)
 }
 fn remote_proposals(g: &Git, destination: &str) -> R<ProposalMap> {
-    let bytes = g.run(
-        &[
-            "-c",
-            "protocol.allow=never",
-            "-c",
-            "protocol.file.allow=always",
-            "ls-remote",
-            "--refs",
-            destination,
-            &format!("{PROPOSALS}*"),
-        ],
-        None,
+    let bytes = g.run_local_repository(
+        &["ls-remote", "--refs"],
+        Path::new(destination),
+        &[&format!("{PROPOSALS}*")],
     )?;
     parse_proposals(&bytes, PROPOSALS)
 }
@@ -1400,23 +1383,25 @@ fn flush_inner(state: &Path, db: &Connection, destination: &str) -> R<()> {
             .iter()
             .map(|(id, object)| format!("{object}:{PROPOSALS}{id}"))
             .collect();
-        let mut args = vec![
-            "-c",
-            "protocol.allow=never",
-            "-c",
-            "protocol.file.allow=always",
-            "-c",
-            "push.recurseSubmodules=no",
-            "push",
-            "--atomic",
-            "--no-follow-tags",
-            "--receive-pack=git -c core.hooksPath=/dev/null receive-pack",
-            destination,
-            &a,
-            &b,
-        ];
-        args.extend(proposal_specs.iter().map(String::as_str));
-        g.run(&args, None)?;
+        let receiver = if cfg!(windows) {
+            "--receive-pack=git -c core.hooksPath=NUL receive-pack"
+        } else {
+            "--receive-pack=git -c core.hooksPath=/dev/null receive-pack"
+        };
+        let mut specs = vec![a.as_str(), b.as_str()];
+        specs.extend(proposal_specs.iter().map(String::as_str));
+        g.run_local_repository(
+            &[
+                "-c",
+                "push.recurseSubmodules=no",
+                "push",
+                "--atomic",
+                "--no-follow-tags",
+                receiver,
+            ],
+            Path::new(destination),
+            &specs,
+        )?;
         fault("backup_after_push");
         if remote_refs(&g, destination)? != (Some(pending.clone()), Some(metadata.clone()))
             || remote_proposals(&g, destination)? != proposals
