@@ -113,7 +113,7 @@ jobs:
       - name: Read-only inspector contracts
         run: cargo test --locked --manifest-path services/inspector/Cargo.toml
       - name: Read-only MCP Events and GitHub identity contracts
-        run: cargo test --locked --manifest-path services/mcp-events/Cargo.toml
+        run: cargo test --locked --manifest-path services/mcp-events/Cargo.toml -- --show-output
       - name: Build authenticated transport
         run: cargo build --locked --manifest-path services/transport/Cargo.toml
       - name: Guided pairing contracts

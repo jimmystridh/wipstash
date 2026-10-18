@@ -122,3 +122,16 @@ those paths. New fixtures now canonicalize their temporary roots, matching the
 existing transport test approach; production no-follow checks are unchanged.
 An additional Unix regression verifies a deliberate symlink alias is still
 rejected. This adds one local Unix test; macOS verification awaits the new CI run.
+
+The canonical-path fix removed macOS filesystem failures, but the next run
+completed only 51 of 96 rounds before the auth pressure test's old 45-second
+Linux-derived scheduling cutoff. This was an incomplete correctness run, not a
+passed concurrency test. Eight workers, 96 rounds, every security assertion and
+SQLite durability remain unchanged. The test now separates the informational
+45-second performance reference from a 300-second cooperative scheduling
+deadline and reports phase/worker counts in successful CI output too. The guard
+cannot interrupt blocked filesystem operations or thread joins; the workflow's
+outer timeout remains. A passing rerun will not establish that the observed
+cross-platform performance disparity disappeared. The newly instrumented local
+Linux run completed in 16.208 seconds, including setup and validation as well
+as the 7,680 raced operations; macOS phase calibration awaits CI.
