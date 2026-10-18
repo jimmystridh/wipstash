@@ -12,16 +12,27 @@ async fn managed_authority_binding_mismatch_fails_before_engine_launch() {
     pairing_files::ensure_private_dir(&staging).unwrap();
     let managed = root.join("pairing.sqlite");
     let store = pairing::PairingStore::open(&managed).unwrap();
-    store.initialize(&pairing::AuthorityBinding {
-        project: "project".into(), authority: "authority".into(), epoch: 1,
-        authority_device: "coordinator".into(),
-    }).unwrap();
+    store
+        .initialize(&pairing::AuthorityBinding {
+            project: "project".into(),
+            authority: "authority".into(),
+            epoch: 1,
+            authority_device: "coordinator".into(),
+        })
+        .unwrap();
     let config = Config {
-        engine: root.join("engine-must-not-run"), state, staging,
-        project: "project".into(), authority: "authority".into(), epoch: 2,
-        device: "coordinator".into(), acl: AclSource::Managed { managed },
-        ca: root.join("unused-ca"), certificate: root.join("unused-cert"),
-        key: root.join("unused-key").into(), listen: "127.0.0.1:0".parse().unwrap(),
+        engine: root.join("engine-must-not-run"),
+        state,
+        staging,
+        project: "project".into(),
+        authority: "authority".into(),
+        epoch: 2,
+        device: "coordinator".into(),
+        acl: AclSource::Managed { managed },
+        ca: root.join("unused-ca"),
+        certificate: root.join("unused-cert"),
+        key: root.join("unused-key").into(),
+        listen: "127.0.0.1:0".parse().unwrap(),
         limits: Limits::default(),
     };
     match Service::new(config).await {

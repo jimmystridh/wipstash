@@ -3,8 +3,8 @@ pub mod daemon;
 pub mod enrollment;
 pub mod pairing;
 pub mod pairing_cli;
-pub mod pairing_files;
 pub mod pairing_crypto;
+pub mod pairing_files;
 pub use pairing::AclSource;
 pub mod resumable;
 use bytes::Bytes;
@@ -288,7 +288,12 @@ pub struct Service {
 }
 impl Service {
     pub async fn new(mut config: Config) -> Result<Arc<Self>> {
-        for p in [config.engine.as_path(), config.state.as_path(), config.staging.as_path(), config.acl.path()] {
+        for p in [
+            config.engine.as_path(),
+            config.state.as_path(),
+            config.staging.as_path(),
+            config.acl.path(),
+        ] {
             if !p.is_absolute() {
                 return Err(error("absolute_config_paths_required"));
             }

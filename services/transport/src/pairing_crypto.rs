@@ -5,14 +5,17 @@
 //! names are discarded; certificates bind the complete immutable invitation scope.
 //! This module does not read/write files, grant access, or open network listeners.
 
-use crate::{error, fingerprint, Result};
 use crate::pairing::{EnrollmentResponse, InvitePurpose, InviteScope};
+use crate::{error, fingerprint, Result};
 use rcgen::{
     BasicConstraints, Certificate, CertificateParams, CertificateSigningRequestParams,
-    DistinguishedName, DnType, ExtendedKeyUsagePurpose, IsCa, KeyPair, KeyUsagePurpose,
-    PublicKey, PublicKeyData, SerialNumber, PKCS_ECDSA_P256_SHA256,
+    DistinguishedName, DnType, ExtendedKeyUsagePurpose, IsCa, KeyPair, KeyUsagePurpose, PublicKey,
+    PublicKeyData, SerialNumber, PKCS_ECDSA_P256_SHA256,
 };
-use ring::{rand::{SecureRandom, SystemRandom}, signature};
+use ring::{
+    rand::{SecureRandom, SystemRandom},
+    signature,
+};
 use rustls::pki_types::{CertificateDer, CertificateSigningRequestDer, PrivatePkcs8KeyDer};
 use sha2::{Digest, Sha256};
 use time::OffsetDateTime;
@@ -68,14 +71,20 @@ impl Issuer {
         }
         let params = CertificateParams::from_ca_cert_der(&CertificateDer::from(ca_der.as_slice()))
             .map_err(|_| error("pairing_ca_profile"))?;
-        let certificate = params.self_signed(&key).map_err(|_| error("pairing_ca_profile"))?;
+        let certificate = params
+            .self_signed(&key)
+            .map_err(|_| error("pairing_ca_profile"))?;
         // Fail closed for imported roots whose subject cannot be preserved by
         // rcgen 0.13.2's issuer reconstruction. Never silently change the issuer.
         let reconstructed = parse_certificate(certificate.der())?;
         if reconstructed.subject().as_raw() != ca.subject().as_raw() {
             return Err(error("pairing_ca_subject_encoding"));
         }
-        Ok(Self { certificate, key, ca_der })
+        Ok(Self {
+            certificate,
+            key,
+            ca_der,
+        })
     }
 
     pub fn certificate_der(&self) -> &[u8] {
@@ -90,10 +99,15 @@ pub fn generate_local_csr() -> Result<LocalCsr> {
         .map_err(|_| error("pairing_key_generation"))?;
     let mut params = CertificateParams::default();
     params.distinguished_name = DistinguishedName::new();
-    let request = params.serialize_request(&key).map_err(|_| error("pairing_csr_generation"))?;
+    let request = params
+        .serialize_request(&key)
+        .map_err(|_| error("pairing_csr_generation"))?;
     let csr_der = request.der().to_vec();
     verify_csr(&csr_der)?;
-    Ok(LocalCsr { key_pem: key.serialize_pem(), csr_der })
+    Ok(LocalCsr {
+        key_pem: key.serialize_pem(),
+        csr_der,
+    })
 }
 
 /// Check restart journal consistency without sending or installing credentials.
@@ -110,8 +124,8 @@ pub fn verify_csr(csr_der: &[u8]) -> Result<VerifiedCsr> {
     if csr_der.is_empty() || csr_der.len() > CSR_MAX {
         return Err(error("pairing_csr_bound"));
     }
-    let (remainder, csr) = X509CertificationRequest::from_der(csr_der)
-        .map_err(|_| error("pairing_invalid_csr"))?;
+    let (remainder, csr) =
+        X509CertificationRequest::from_der(csr_der).map_err(|_| error("pairing_invalid_csr"))?;
     if !remainder.is_empty() || csr.certification_request_info.version.0 != 0 {
         return Err(error("pairing_invalid_csr"));
     }
@@ -128,15 +142,20 @@ pub fn verify_csr(csr_der: &[u8]) -> Result<VerifiedCsr> {
     if csr.signature_value.unused_bits != 0 {
         return Err(error("pairing_invalid_csr_signature"));
     }
-    csr.verify_signature().map_err(|_| error("pairing_invalid_csr_signature"))?;
-    let parsed = CertificateSigningRequestParams::from_der(&CertificateSigningRequestDer::from(csr_der))
-        .map_err(|_| error("pairing_invalid_csr"))?;
+    csr.verify_signature()
+        .map_err(|_| error("pairing_invalid_csr_signature"))?;
+    let parsed =
+        CertificateSigningRequestParams::from_der(&CertificateSigningRequestDer::from(csr_der))
+            .map_err(|_| error("pairing_invalid_csr"))?;
     if parsed.public_key.algorithm() != &PKCS_ECDSA_P256_SHA256
         || parsed.public_key.der_bytes() != info.subject_pki.subject_public_key.data.as_ref()
     {
         return Err(error("pairing_csr_key_mismatch"));
     }
-    Ok(VerifiedCsr { public_key: parsed.public_key, spki_der: info.subject_pki.raw.to_vec() })
+    Ok(VerifiedCsr {
+        public_key: parsed.public_key,
+        spki_der: info.subject_pki.raw.to_vec(),
+    })
 }
 
 pub fn issue_client_certificate(
@@ -152,7 +171,8 @@ pub fn issue_client_certificate(
     // Recheck on every issuance: a long-lived Issuer does not extend CA expiry.
     let ca = validate_ca(&issuer.ca_der, now)?;
     let params = client_parameters(scope, &ca, now)?;
-    let certificate = params.signed_by(&csr.public_key, &issuer.certificate, &issuer.key)
+    let certificate = params
+        .signed_by(&csr.public_key, &issuer.certificate, &issuer.key)
         .map_err(|_| error("pairing_certificate_signing"))?;
     Ok(certificate.der().to_vec())
 }
@@ -160,14 +180,21 @@ pub fn issue_client_certificate(
 /// Verify a proof over the server's complete domain-separated challenge bytes.
 /// Challenge freshness, single-use consumption and request binding live in the
 /// transactional store, rather than in this stateless cryptographic primitive.
-pub fn verify_recovery_signature(csr_der: &[u8], message: &[u8], signature_bytes: &[u8]) -> Result<()> {
+pub fn verify_recovery_signature(
+    csr_der: &[u8],
+    message: &[u8],
+    signature_bytes: &[u8],
+) -> Result<()> {
     if message.is_empty() || message.len() > 4096 || signature_bytes.len() > 80 {
         return Err(error("pairing_recovery_bound"));
     }
     let csr = verify_csr(csr_der)?;
-    signature::UnparsedPublicKey::new(&signature::ECDSA_P256_SHA256_ASN1, csr.public_key.der_bytes())
-        .verify(message, signature_bytes)
-        .map_err(|_| error("pairing_recovery_signature"))
+    signature::UnparsedPublicKey::new(
+        &signature::ECDSA_P256_SHA256_ASN1,
+        csr.public_key.der_bytes(),
+    )
+    .verify(message, signature_bytes)
+    .map_err(|_| error("pairing_recovery_signature"))
 }
 
 pub fn sign_recovery(key_pem: &str, message: &[u8]) -> Result<Vec<u8>> {
@@ -177,10 +204,12 @@ pub fn sign_recovery(key_pem: &str, message: &[u8]) -> Result<Vec<u8>> {
     let key = p256_key_from_pem(key_pem)?;
     let der = zeroize::Zeroizing::new(key.serialize_der());
     let rng = SystemRandom::new();
-    let signer = signature::EcdsaKeyPair::from_pkcs8(
-        &signature::ECDSA_P256_SHA256_ASN1_SIGNING, &der, &rng,
-    ).map_err(|_| error("pairing_private_key"))?;
-    signer.sign(&rng, message).map(|value| value.as_ref().to_vec())
+    let signer =
+        signature::EcdsaKeyPair::from_pkcs8(&signature::ECDSA_P256_SHA256_ASN1_SIGNING, &der, &rng)
+            .map_err(|_| error("pairing_private_key"))?;
+    signer
+        .sign(&rng, message)
+        .map(|value| value.as_ref().to_vec())
         .map_err(|_| error("pairing_recovery_signature"))
 }
 
@@ -197,11 +226,17 @@ pub fn validate_enrollment_response(
     expected_scope.validate()?;
     let expected_generation = match &expected_scope.purpose {
         InvitePurpose::New => 1,
-        InvitePurpose::Rotate { expected_generation } => expected_generation.checked_add(1)
+        InvitePurpose::Rotate {
+            expected_generation,
+        } => expected_generation
+            .checked_add(1)
             .ok_or_else(|| error("pairing_generation_overflow"))?,
     };
-    if response.version != 1 || request_id.is_empty() || request_id.len() > 128
-        || response.request_id != request_id || response.generation != expected_generation
+    if response.version != 1
+        || request_id.is_empty()
+        || request_id.len() > 128
+        || response.request_id != request_id
+        || response.generation != expected_generation
         || response.scope != *expected_scope
         || response.ca_certificate_der != expected_scope.ca_certificate_der
         || response.fingerprint != fingerprint(&response.certificate_der)
@@ -219,16 +254,22 @@ pub fn validate_enrollment_response(
     {
         return Err(error("pairing_response_key_or_issuer"));
     }
-    leaf.verify_signature(Some(ca.public_key())).map_err(|_| error("pairing_response_signature"))?;
+    leaf.verify_signature(Some(ca.public_key()))
+        .map_err(|_| error("pairing_response_signature"))?;
     validate_leaf_profile(&leaf, expected_scope)?;
     let validity = leaf.validity();
     let start = validity.not_before.timestamp();
     let end = validity.not_after.timestamp();
     let lifetime = i64::try_from(expected_scope.certificate_lifetime_secs)
         .map_err(|_| error("pairing_certificate_lifetime"))?;
-    let duration = end.checked_sub(start).ok_or_else(|| error("pairing_certificate_validity"))?;
-    if now < start || now >= end || start < ca.validity().not_before.timestamp()
-        || end > ca.validity().not_after.timestamp() || duration < lifetime
+    let duration = end
+        .checked_sub(start)
+        .ok_or_else(|| error("pairing_certificate_validity"))?;
+    if now < start
+        || now >= end
+        || start < ca.validity().not_before.timestamp()
+        || end > ca.validity().not_after.timestamp()
+        || duration < lifetime
         || duration > lifetime + CLOCK_SKEW_SECS
     {
         return Err(error("pairing_certificate_validity"));
@@ -236,21 +277,32 @@ pub fn validate_enrollment_response(
     Ok(())
 }
 
-fn client_parameters(scope: &InviteScope, ca: &X509Certificate<'_>, now: i64) -> Result<CertificateParams> {
+fn client_parameters(
+    scope: &InviteScope,
+    ca: &X509Certificate<'_>,
+    now: i64,
+) -> Result<CertificateParams> {
     validate_lifetime(scope.certificate_lifetime_secs)?;
-    let end = now.checked_add(scope.certificate_lifetime_secs as i64)
+    let end = now
+        .checked_add(scope.certificate_lifetime_secs as i64)
         .ok_or_else(|| error("pairing_certificate_lifetime"))?;
     if end > ca.validity().not_after.timestamp() {
         return Err(error("pairing_ca_expires_before_client"));
     }
-    let start = now.saturating_sub(CLOCK_SKEW_SECS).max(ca.validity().not_before.timestamp());
+    let start = now
+        .saturating_sub(CLOCK_SKEW_SECS)
+        .max(ca.validity().not_before.timestamp());
     let mut params = CertificateParams::default();
     params.not_before = timestamp(start)?;
     params.not_after = timestamp(end)?;
     params.serial_number = Some(random_serial()?);
     params.distinguished_name = DistinguishedName::new();
-    params.distinguished_name.push(DnType::CommonName, scope_digest(scope)?);
-    params.distinguished_name.push(DnType::OrganizationalUnitName, "Wipstash client");
+    params
+        .distinguished_name
+        .push(DnType::CommonName, scope_digest(scope)?);
+    params
+        .distinguished_name
+        .push(DnType::OrganizationalUnitName, "Wipstash client");
     params.is_ca = IsCa::ExplicitNoCa;
     params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
     params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ClientAuth];
@@ -267,21 +319,36 @@ fn scope_digest(scope: &InviteScope) -> Result<String> {
 
 fn validate_leaf_profile(leaf: &X509Certificate<'_>, scope: &InviteScope) -> Result<()> {
     validate_extension_profile(leaf, true)?;
-    let constraints = leaf.basic_constraints().map_err(|_| error("pairing_leaf_constraints"))?
+    let constraints = leaf
+        .basic_constraints()
+        .map_err(|_| error("pairing_leaf_constraints"))?
         .ok_or_else(|| error("pairing_leaf_constraints"))?;
-    if !constraints.critical || constraints.value.ca || constraints.value.path_len_constraint.is_some() {
+    if !constraints.critical
+        || constraints.value.ca
+        || constraints.value.path_len_constraint.is_some()
+    {
         return Err(error("pairing_leaf_constraints"));
     }
-    let usage = leaf.key_usage().map_err(|_| error("pairing_leaf_usage"))?
+    let usage = leaf
+        .key_usage()
+        .map_err(|_| error("pairing_leaf_usage"))?
         .ok_or_else(|| error("pairing_leaf_usage"))?;
     if !usage.critical || usage.value.flags != 1 {
         return Err(error("pairing_leaf_usage"));
     }
-    let eku = leaf.extended_key_usage().map_err(|_| error("pairing_leaf_usage"))?
+    let eku = leaf
+        .extended_key_usage()
+        .map_err(|_| error("pairing_leaf_usage"))?
         .ok_or_else(|| error("pairing_leaf_usage"))?;
     let eku = eku.value;
-    if !eku.client_auth || eku.server_auth || eku.any || eku.code_signing || eku.email_protection
-        || eku.time_stamping || eku.ocsp_signing || !eku.other.is_empty()
+    if !eku.client_auth
+        || eku.server_auth
+        || eku.any
+        || eku.code_signing
+        || eku.email_protection
+        || eku.time_stamping
+        || eku.ocsp_signing
+        || !eku.other.is_empty()
     {
         return Err(error("pairing_leaf_usage"));
     }
@@ -304,8 +371,8 @@ fn parse_certificate(der: &[u8]) -> Result<X509Certificate<'_>> {
     if der.is_empty() || der.len() > CERTIFICATE_MAX {
         return Err(error("pairing_certificate_bound"));
     }
-    let (remainder, certificate) = X509Certificate::from_der(der)
-        .map_err(|_| error("pairing_invalid_certificate"))?;
+    let (remainder, certificate) =
+        X509Certificate::from_der(der).map_err(|_| error("pairing_invalid_certificate"))?;
     if !remainder.is_empty() {
         return Err(error("pairing_invalid_certificate"));
     }
@@ -317,11 +384,17 @@ fn validate_ca(der: &[u8], now: i64) -> Result<X509Certificate<'_>> {
     validate_certificate_structure(&ca)?;
     validate_p256_spki(ca.public_key())?;
     validate_extension_profile(&ca, false)?;
-    let constraints = ca.basic_constraints().map_err(|_| error("pairing_ca_constraints"))?
+    let constraints = ca
+        .basic_constraints()
+        .map_err(|_| error("pairing_ca_constraints"))?
         .ok_or_else(|| error("pairing_ca_constraints"))?;
-    let usage = ca.key_usage().map_err(|_| error("pairing_ca_usage"))?
+    let usage = ca
+        .key_usage()
+        .map_err(|_| error("pairing_ca_usage"))?
         .ok_or_else(|| error("pairing_ca_usage"))?;
-    if !constraints.critical || !constraints.value.ca || !usage.value.key_cert_sign()
+    if !constraints.critical
+        || !constraints.value.ca
+        || !usage.value.key_cert_sign()
         || ca.issuer().as_raw() != ca.subject().as_raw()
     {
         return Err(error("pairing_ca_profile"));
@@ -329,17 +402,23 @@ fn validate_ca(der: &[u8], now: i64) -> Result<X509Certificate<'_>> {
     if now < ca.validity().not_before.timestamp() || now >= ca.validity().not_after.timestamp() {
         return Err(error("pairing_ca_validity"));
     }
-    ca.verify_signature(None).map_err(|_| error("pairing_ca_signature"))?;
+    ca.verify_signature(None)
+        .map_err(|_| error("pairing_ca_signature"))?;
     Ok(ca)
 }
 
 fn validate_certificate_structure(cert: &X509Certificate<'_>) -> Result<()> {
     validate_signature_algorithm(&cert.signature_algorithm)?;
     validate_signature_algorithm(&cert.tbs_certificate.signature)?;
-    if cert.version().0 != 2 || cert.signature_algorithm != cert.tbs_certificate.signature
-        || cert.signature_value.unused_bits != 0 || cert.issuer_uid.is_some() || cert.subject_uid.is_some()
-        || cert.raw_serial().is_empty() || cert.raw_serial().len() > 20
-        || cert.raw_serial()[0] & 0x80 != 0 || cert.raw_serial().iter().all(|value| *value == 0)
+    if cert.version().0 != 2
+        || cert.signature_algorithm != cert.tbs_certificate.signature
+        || cert.signature_value.unused_bits != 0
+        || cert.issuer_uid.is_some()
+        || cert.subject_uid.is_some()
+        || cert.raw_serial().is_empty()
+        || cert.raw_serial().len() > 20
+        || cert.raw_serial()[0] & 0x80 != 0
+        || cert.raw_serial().iter().all(|value| *value == 0)
     {
         return Err(error("pairing_certificate_profile"));
     }
@@ -347,11 +426,14 @@ fn validate_certificate_structure(cert: &X509Certificate<'_>) -> Result<()> {
 }
 
 fn validate_extension_profile(cert: &X509Certificate<'_>, leaf: bool) -> Result<()> {
-    cert.extensions_map().map_err(|_| error("pairing_duplicate_extensions"))?;
+    cert.extensions_map()
+        .map_err(|_| error("pairing_duplicate_extensions"))?;
     for extension in cert.extensions() {
         let allowed = match extension.parsed_extension() {
-            ParsedExtension::BasicConstraints(_) | ParsedExtension::KeyUsage(_)
-            | ParsedExtension::SubjectKeyIdentifier(_) | ParsedExtension::AuthorityKeyIdentifier(_) => true,
+            ParsedExtension::BasicConstraints(_)
+            | ParsedExtension::KeyUsage(_)
+            | ParsedExtension::SubjectKeyIdentifier(_)
+            | ParsedExtension::AuthorityKeyIdentifier(_) => true,
             ParsedExtension::ExtendedKeyUsage(_) => leaf,
             _ => false,
         };
@@ -363,10 +445,15 @@ fn validate_extension_profile(cert: &X509Certificate<'_>, leaf: bool) -> Result<
 }
 
 fn validate_p256_spki(spki: &SubjectPublicKeyInfo<'_>) -> Result<()> {
-    let curve = spki.algorithm.parameters.as_ref().and_then(|value| value.as_oid().ok());
+    let curve = spki
+        .algorithm
+        .parameters
+        .as_ref()
+        .and_then(|value| value.as_oid().ok());
     if spki.algorithm.algorithm.to_id_string() != "1.2.840.10045.2.1"
         || curve.map(|value| value.to_id_string()).as_deref() != Some("1.2.840.10045.3.1.7")
-        || spki.subject_public_key.unused_bits != 0 || spki.subject_public_key.data.len() != 65
+        || spki.subject_public_key.unused_bits != 0
+        || spki.subject_public_key.data.len() != 65
         || spki.subject_public_key.data.first().copied() != Some(4)
     {
         return Err(error("pairing_unsupported_public_key"));
@@ -375,7 +462,8 @@ fn validate_p256_spki(spki: &SubjectPublicKeyInfo<'_>) -> Result<()> {
 }
 
 fn validate_signature_algorithm(algorithm: &AlgorithmIdentifier<'_>) -> Result<()> {
-    if algorithm.algorithm.to_id_string() != "1.2.840.10045.4.3.2" || algorithm.parameters.is_some() {
+    if algorithm.algorithm.to_id_string() != "1.2.840.10045.4.3.2" || algorithm.parameters.is_some()
+    {
         return Err(error("pairing_unsupported_signature"));
     }
     Ok(())
@@ -394,7 +482,9 @@ fn timestamp(value: i64) -> Result<OffsetDateTime> {
 
 fn random_serial() -> Result<SerialNumber> {
     let mut bytes = [0u8; 20];
-    SystemRandom::new().fill(&mut bytes).map_err(|_| error("pairing_randomness"))?;
+    SystemRandom::new()
+        .fill(&mut bytes)
+        .map_err(|_| error("pairing_randomness"))?;
     // Positive, nonzero, at most 20 DER INTEGER octets (RFC 5280).
     bytes[0] = (bytes[0] & 0x7f) | 1;
     Ok(SerialNumber::from_slice(&bytes))
@@ -454,31 +544,49 @@ pub fn generate_bootstrap(server_names: &[String], now: i64) -> Result<Bootstrap
         return Err(error("pairing_server_names"));
     }
     for name in server_names {
-        if name.is_empty() || name.len() > 253 || name.contains('*')
+        if name.is_empty()
+            || name.len() > 253
+            || name.contains('*')
             || rustls::pki_types::ServerName::try_from(name.clone()).is_err()
         {
             return Err(error("pairing_server_names"));
         }
     }
-    let start = timestamp(now.checked_sub(CLOCK_SKEW_SECS).ok_or_else(|| error("pairing_invalid_time"))?)?;
-    let ca_end = timestamp(now.checked_add(5 * BOOTSTRAP_SERVER_LIFETIME_SECS)
-        .ok_or_else(|| error("pairing_invalid_time"))?)?;
-    let server_end = timestamp(now.checked_add(BOOTSTRAP_SERVER_LIFETIME_SECS)
-        .ok_or_else(|| error("pairing_invalid_time"))?)?;
-    let ca_key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).map_err(|_| error("pairing_key_generation"))?;
+    let start = timestamp(
+        now.checked_sub(CLOCK_SKEW_SECS)
+            .ok_or_else(|| error("pairing_invalid_time"))?,
+    )?;
+    let ca_end = timestamp(
+        now.checked_add(5 * BOOTSTRAP_SERVER_LIFETIME_SECS)
+            .ok_or_else(|| error("pairing_invalid_time"))?,
+    )?;
+    let server_end = timestamp(
+        now.checked_add(BOOTSTRAP_SERVER_LIFETIME_SECS)
+            .ok_or_else(|| error("pairing_invalid_time"))?,
+    )?;
+    let ca_key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256)
+        .map_err(|_| error("pairing_key_generation"))?;
     let mut ca_params = CertificateParams::default();
     ca_params.distinguished_name = DistinguishedName::new();
-    ca_params.distinguished_name.push(DnType::CommonName, "Wipstash pairing authority");
+    ca_params
+        .distinguished_name
+        .push(DnType::CommonName, "Wipstash pairing authority");
     ca_params.not_before = start;
     ca_params.not_after = ca_end;
     ca_params.serial_number = Some(random_serial()?);
     ca_params.is_ca = IsCa::Ca(BasicConstraints::Constrained(0));
     ca_params.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
-    let ca = ca_params.self_signed(&ca_key).map_err(|_| error("pairing_ca_generation"))?;
-    let server_key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).map_err(|_| error("pairing_key_generation"))?;
-    let mut server_params = CertificateParams::new(server_names.to_vec()).map_err(|_| error("pairing_server_names"))?;
+    let ca = ca_params
+        .self_signed(&ca_key)
+        .map_err(|_| error("pairing_ca_generation"))?;
+    let server_key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256)
+        .map_err(|_| error("pairing_key_generation"))?;
+    let mut server_params =
+        CertificateParams::new(server_names.to_vec()).map_err(|_| error("pairing_server_names"))?;
     server_params.distinguished_name = DistinguishedName::new();
-    server_params.distinguished_name.push(DnType::CommonName, "Wipstash transport");
+    server_params
+        .distinguished_name
+        .push(DnType::CommonName, "Wipstash transport");
     server_params.not_before = start;
     server_params.not_after = server_end;
     server_params.serial_number = Some(random_serial()?);
@@ -486,11 +594,16 @@ pub fn generate_bootstrap(server_names: &[String], now: i64) -> Result<Bootstrap
     server_params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
     server_params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
     server_params.use_authority_key_identifier_extension = true;
-    let server = server_params.signed_by(&server_key, &ca, &ca_key)
+    let server = server_params
+        .signed_by(&server_key, &ca, &ca_key)
         .map_err(|_| error("pairing_server_generation"))?;
     Ok(BootstrapMaterial {
-        ca_pem: ca.pem(), ca_key_pem: ca_key.serialize_pem(), ca_certificate_der: ca.der().to_vec(),
-        server_pem: server.pem(), server_key_pem: server_key.serialize_pem(), server_certificate_der: server.der().to_vec(),
+        ca_pem: ca.pem(),
+        ca_key_pem: ca_key.serialize_pem(),
+        ca_certificate_der: ca.der().to_vec(),
+        server_pem: server.pem(),
+        server_key_pem: server_key.serialize_pem(),
+        server_certificate_der: server.der().to_vec(),
     })
 }
 
@@ -506,14 +619,20 @@ mod tests {
         let bootstrap = generate_bootstrap(&["localhost".to_owned()], NOW).unwrap();
         let issuer = Issuer::from_pem(&bootstrap.ca_pem, &bootstrap.ca_key_pem, NOW).unwrap();
         let scope = InviteScope {
-            project: "test_project".to_owned(), authority: "test_authority".to_owned(), epoch: 1,
-            authority_device: "coordinator".to_owned(), client_device: "test_client".to_owned(),
+            project: "test_project".to_owned(),
+            authority: "test_authority".to_owned(),
+            epoch: 1,
+            authority_device: "coordinator".to_owned(),
+            client_device: "test_client".to_owned(),
             purpose: InvitePurpose::New,
             enrollment_address: "127.0.0.1:4443".parse().unwrap(),
-            enrollment_server_name: "localhost".to_owned(), enrollment_leaf_pin: fingerprint(&bootstrap.server_certificate_der),
-            sync_address: "127.0.0.1:4444".parse().unwrap(), sync_server_name: "localhost".to_owned(),
+            enrollment_server_name: "localhost".to_owned(),
+            enrollment_leaf_pin: fingerprint(&bootstrap.server_certificate_der),
+            sync_address: "127.0.0.1:4444".parse().unwrap(),
+            sync_server_name: "localhost".to_owned(),
             sync_leaf_pin: fingerprint(&bootstrap.server_certificate_der),
-            ca_certificate_der: bootstrap.ca_certificate_der.clone(), certificate_lifetime_secs: 86400,
+            ca_certificate_der: bootstrap.ca_certificate_der.clone(),
+            certificate_lifetime_secs: 86400,
         };
         (bootstrap, issuer, scope, generate_local_csr().unwrap())
     }
@@ -521,9 +640,21 @@ mod tests {
     fn response(issuer: &Issuer, scope: &InviteScope, csr_der: &[u8]) -> EnrollmentResponse {
         let csr = verify_csr(csr_der).unwrap();
         let der = issue_client_certificate(&csr, scope, issuer, NOW).unwrap();
-        let generation = match &scope.purpose { InvitePurpose::New => 1, InvitePurpose::Rotate { expected_generation } => expected_generation + 1 };
-        EnrollmentResponse { version: 1, fingerprint: fingerprint(&der), certificate_der: der,
-            ca_certificate_der: scope.ca_certificate_der.clone(), scope: scope.clone(), generation, request_id: REQUEST.to_owned() }
+        let generation = match &scope.purpose {
+            InvitePurpose::New => 1,
+            InvitePurpose::Rotate {
+                expected_generation,
+            } => expected_generation + 1,
+        };
+        EnrollmentResponse {
+            version: 1,
+            fingerprint: fingerprint(&der),
+            certificate_der: der,
+            ca_certificate_der: scope.ca_certificate_der.clone(),
+            scope: scope.clone(),
+            generation,
+            request_id: REQUEST.to_owned(),
+        }
     }
 
     fn replace_leaf(response: &mut EnrollmentResponse, der: Vec<u8>) {
@@ -532,7 +663,9 @@ mod tests {
     }
 
     fn rejected(response: &EnrollmentResponse, local: &LocalCsr, scope: &InviteScope) {
-        assert!(validate_enrollment_response(response, &local.csr_der, scope, REQUEST, NOW).is_err());
+        assert!(
+            validate_enrollment_response(response, &local.csr_der, scope, REQUEST, NOW).is_err()
+        );
     }
 
     #[test]
@@ -550,7 +683,9 @@ mod tests {
         let message = b"wipstash/enrollment/recovery/v1\0synthetic-challenge";
         let signature = sign_recovery(&local.key_pem, message).unwrap();
         verify_recovery_signature(&local.csr_der, message, &signature).unwrap();
-        assert!(verify_recovery_signature(&local.csr_der, b"changed challenge", &signature).is_err());
+        assert!(
+            verify_recovery_signature(&local.csr_der, b"changed challenge", &signature).is_err()
+        );
         let other = generate_local_csr().unwrap();
         assert!(validate_local_key_csr(&other.key_pem, &local.csr_der).is_err());
         assert!(verify_recovery_signature(&other.csr_der, message, &signature).is_err());
@@ -588,26 +723,41 @@ mod tests {
         server_auth.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
         cases.push(server_auth);
         let mut ca = CertificateParams::default();
-        ca.custom_extensions.push(CustomExtension::from_oid_content(&[2, 5, 29, 19], vec![0x30, 0x03, 0x01, 0x01, 0xff]));
+        ca.custom_extensions.push(CustomExtension::from_oid_content(
+            &[2, 5, 29, 19],
+            vec![0x30, 0x03, 0x01, 0x01, 0xff],
+        ));
         cases.push(ca);
         let mut custom = CertificateParams::default();
-        custom.custom_extensions.push(CustomExtension::from_oid_content(&[1, 2, 3, 4, 5], vec![0x05, 0]));
+        custom
+            .custom_extensions
+            .push(CustomExtension::from_oid_content(
+                &[1, 2, 3, 4, 5],
+                vec![0x05, 0],
+            ));
         cases.push(custom);
         for params in cases {
             let csr = params.serialize_request(&key).unwrap();
             assert!(verify_csr(csr.der()).is_err());
         }
-        let csr = CertificateParams::default().serialize_request_with_attributes(&key, vec![Attribute {
-            oid: &[1, 2, 840, 113549, 1, 9, 7],
-            values: vec![0x31, 0x03, 0x0c, 0x01, b'x'],
-        }]).unwrap();
+        let csr = CertificateParams::default()
+            .serialize_request_with_attributes(
+                &key,
+                vec![Attribute {
+                    oid: &[1, 2, 840, 113549, 1, 9, 7],
+                    values: vec![0x31, 0x03, 0x0c, 0x01, b'x'],
+                }],
+            )
+            .unwrap();
         assert!(verify_csr(csr.der()).is_err());
     }
 
     #[test]
     fn csr_rejects_other_supported_rcgen_algorithms() {
         let key = KeyPair::generate_for(&PKCS_ED25519).unwrap();
-        let csr = CertificateParams::default().serialize_request(&key).unwrap();
+        let csr = CertificateParams::default()
+            .serialize_request(&key)
+            .unwrap();
         assert!(verify_csr(csr.der()).is_err());
         assert!(sign_recovery(&key.serialize_pem(), b"challenge").is_err());
     }
@@ -618,9 +768,24 @@ mod tests {
         assert!(Issuer::from_pem(&bootstrap.ca_pem, &local.key_pem, NOW).is_err());
         assert!(Issuer::from_pem(&bootstrap.server_pem, &bootstrap.server_key_pem, NOW).is_err());
         assert!(Issuer::from_pem(&bootstrap.ca_pem, &bootstrap.ca_key_pem, NOW - 61).is_err());
-        assert!(Issuer::from_pem(&bootstrap.ca_pem, &bootstrap.ca_key_pem, NOW + 5 * BOOTSTRAP_SERVER_LIFETIME_SECS).is_err());
-        assert!(Issuer::from_pem(&(bootstrap.ca_pem.clone() + &bootstrap.ca_pem), &bootstrap.ca_key_pem, NOW).is_err());
-        assert!(Issuer::from_pem(&bootstrap.ca_pem, &(bootstrap.ca_key_pem.clone() + &bootstrap.ca_key_pem), NOW).is_err());
+        assert!(Issuer::from_pem(
+            &bootstrap.ca_pem,
+            &bootstrap.ca_key_pem,
+            NOW + 5 * BOOTSTRAP_SERVER_LIFETIME_SECS
+        )
+        .is_err());
+        assert!(Issuer::from_pem(
+            &(bootstrap.ca_pem.clone() + &bootstrap.ca_pem),
+            &bootstrap.ca_key_pem,
+            NOW
+        )
+        .is_err());
+        assert!(Issuer::from_pem(
+            &bootstrap.ca_pem,
+            &(bootstrap.ca_key_pem.clone() + &bootstrap.ca_key_pem),
+            NOW
+        )
+        .is_err());
         let key = KeyPair::generate().unwrap();
         let mut params = CertificateParams::default();
         params.is_ca = IsCa::Ca(BasicConstraints::Constrained(0));
@@ -638,13 +803,25 @@ mod tests {
         let key = p256_key_from_pem(&local.key_pem).unwrap();
         let mut params = CertificateParams::default();
         params.distinguished_name = DistinguishedName::new();
-        params.distinguished_name.push(DnType::CommonName, "coordinator-admin");
-        params.distinguished_name.push(DnType::OrganizationName, "attacker");
+        params
+            .distinguished_name
+            .push(DnType::CommonName, "coordinator-admin");
+        params
+            .distinguished_name
+            .push(DnType::OrganizationName, "attacker");
         let csr = params.serialize_request(&key).unwrap();
         let enrolled = response(&issuer, &scope, csr.der());
         validate_enrollment_response(&enrolled, csr.der(), &scope, REQUEST, NOW).unwrap();
         let cert = parse_certificate(&enrolled.certificate_der).unwrap();
-        assert_eq!(cert.subject().iter_common_name().next().unwrap().as_str().unwrap(), scope_digest(&scope).unwrap());
+        assert_eq!(
+            cert.subject()
+                .iter_common_name()
+                .next()
+                .unwrap()
+                .as_str()
+                .unwrap(),
+            scope_digest(&scope).unwrap()
+        );
         assert_eq!(cert.subject().iter_organization().count(), 0);
         assert!(cert.subject_alternative_name().unwrap().is_none());
         assert!(!cert.is_ca());
@@ -660,17 +837,41 @@ mod tests {
         let valid = response(&issuer, &scope, &local.csr_der);
         validate_enrollment_response(&valid, &local.csr_der, &scope, REQUEST, NOW).unwrap();
         let other = generate_local_csr().unwrap();
-        assert!(validate_enrollment_response(&valid, &other.csr_der, &scope, REQUEST, NOW).is_err());
-        assert!(validate_enrollment_response(&valid, &local.csr_der, &scope, "different", NOW).is_err());
-        let mut changed = valid.clone(); changed.request_id.push('b'); rejected(&changed, &local, &scope);
-        let mut changed = valid.clone(); changed.version = 2; rejected(&changed, &local, &scope);
-        let mut changed = valid.clone(); changed.generation = 2; rejected(&changed, &local, &scope);
-        let mut changed = valid.clone(); changed.fingerprint = "0".repeat(64); rejected(&changed, &local, &scope);
-        let mut changed = valid.clone(); changed.ca_certificate_der = bootstrap.server_certificate_der.clone(); rejected(&changed, &local, &scope);
-        let mut changed = valid.clone(); replace_leaf(&mut changed, bootstrap.ca_certificate_der); rejected(&changed, &local, &scope);
-        let mut changed = valid.clone(); replace_leaf(&mut changed, bootstrap.server_certificate_der); rejected(&changed, &local, &scope);
-        let mut changed = valid.clone(); changed.certificate_der.push(0); changed.fingerprint = fingerprint(&changed.certificate_der); rejected(&changed, &local, &scope);
-        assert!(validate_enrollment_response(&valid, &local.csr_der, &scope, REQUEST, NOW + 86400).is_err());
+        assert!(
+            validate_enrollment_response(&valid, &other.csr_der, &scope, REQUEST, NOW).is_err()
+        );
+        assert!(
+            validate_enrollment_response(&valid, &local.csr_der, &scope, "different", NOW).is_err()
+        );
+        let mut changed = valid.clone();
+        changed.request_id.push('b');
+        rejected(&changed, &local, &scope);
+        let mut changed = valid.clone();
+        changed.version = 2;
+        rejected(&changed, &local, &scope);
+        let mut changed = valid.clone();
+        changed.generation = 2;
+        rejected(&changed, &local, &scope);
+        let mut changed = valid.clone();
+        changed.fingerprint = "0".repeat(64);
+        rejected(&changed, &local, &scope);
+        let mut changed = valid.clone();
+        changed.ca_certificate_der = bootstrap.server_certificate_der.clone();
+        rejected(&changed, &local, &scope);
+        let mut changed = valid.clone();
+        replace_leaf(&mut changed, bootstrap.ca_certificate_der);
+        rejected(&changed, &local, &scope);
+        let mut changed = valid.clone();
+        replace_leaf(&mut changed, bootstrap.server_certificate_der);
+        rejected(&changed, &local, &scope);
+        let mut changed = valid.clone();
+        changed.certificate_der.push(0);
+        changed.fingerprint = fingerprint(&changed.certificate_der);
+        rejected(&changed, &local, &scope);
+        assert!(
+            validate_enrollment_response(&valid, &local.csr_der, &scope, REQUEST, NOW + 86400)
+                .is_err()
+        );
     }
 
     #[test]
@@ -678,27 +879,63 @@ mod tests {
         let (_, issuer, scope, local) = fixture();
         let valid = response(&issuer, &scope, &local.csr_der);
         let mut variants = Vec::new();
-        let mut s = scope.clone(); s.project.push('x'); variants.push(s);
-        let mut s = scope.clone(); s.authority.push('x'); variants.push(s);
-        let mut s = scope.clone(); s.epoch += 1; variants.push(s);
-        let mut s = scope.clone(); s.authority_device.push('x'); variants.push(s);
-        let mut s = scope.clone(); s.client_device.push('x'); variants.push(s);
-        let mut s = scope.clone(); s.purpose = InvitePurpose::Rotate { expected_generation: 1 }; variants.push(s);
-        let mut s = scope.clone(); s.enrollment_address.set_port(5555); variants.push(s);
-        let mut s = scope.clone(); s.enrollment_server_name = "other.example".to_owned(); variants.push(s);
-        let mut s = scope.clone(); s.enrollment_leaf_pin = "0".repeat(64); variants.push(s);
-        let mut s = scope.clone(); s.sync_address.set_port(5556); variants.push(s);
-        let mut s = scope.clone(); s.sync_server_name = "other.example".to_owned(); variants.push(s);
-        let mut s = scope.clone(); s.sync_leaf_pin = "0".repeat(64); variants.push(s);
-        let mut s = scope.clone(); s.ca_certificate_der.push(0); variants.push(s);
-        let mut s = scope.clone(); s.certificate_lifetime_secs -= 1; variants.push(s);
+        let mut s = scope.clone();
+        s.project.push('x');
+        variants.push(s);
+        let mut s = scope.clone();
+        s.authority.push('x');
+        variants.push(s);
+        let mut s = scope.clone();
+        s.epoch += 1;
+        variants.push(s);
+        let mut s = scope.clone();
+        s.authority_device.push('x');
+        variants.push(s);
+        let mut s = scope.clone();
+        s.client_device.push('x');
+        variants.push(s);
+        let mut s = scope.clone();
+        s.purpose = InvitePurpose::Rotate {
+            expected_generation: 1,
+        };
+        variants.push(s);
+        let mut s = scope.clone();
+        s.enrollment_address.set_port(5555);
+        variants.push(s);
+        let mut s = scope.clone();
+        s.enrollment_server_name = "other.example".to_owned();
+        variants.push(s);
+        let mut s = scope.clone();
+        s.enrollment_leaf_pin = "0".repeat(64);
+        variants.push(s);
+        let mut s = scope.clone();
+        s.sync_address.set_port(5556);
+        variants.push(s);
+        let mut s = scope.clone();
+        s.sync_server_name = "other.example".to_owned();
+        variants.push(s);
+        let mut s = scope.clone();
+        s.sync_leaf_pin = "0".repeat(64);
+        variants.push(s);
+        let mut s = scope.clone();
+        s.ca_certificate_der.push(0);
+        variants.push(s);
+        let mut s = scope.clone();
+        s.certificate_lifetime_secs -= 1;
+        variants.push(s);
         for altered in variants {
-            let mut changed = valid.clone(); changed.scope = altered.clone();
+            let mut changed = valid.clone();
+            changed.scope = altered.clone();
             rejected(&changed, &local, &scope);
             // A copied certificate cannot be rebound by changing both the
             // expected invitation and outer response to another valid scope.
             changed.ca_certificate_der = altered.ca_certificate_der.clone();
-            changed.generation = match &altered.purpose { InvitePurpose::New => 1, InvitePurpose::Rotate { expected_generation } => expected_generation + 1 };
+            changed.generation = match &altered.purpose {
+                InvitePurpose::New => 1,
+                InvitePurpose::Rotate {
+                    expected_generation,
+                } => expected_generation + 1,
+            };
             rejected(&changed, &local, &altered);
         }
     }
@@ -712,15 +949,40 @@ mod tests {
         for case in 0..6 {
             let mut params = client_parameters(&scope, &ca, NOW).unwrap();
             match case {
-                0 => { params.is_ca = IsCa::Ca(BasicConstraints::Constrained(0)); },
-                1 => { params.extended_key_usages.push(ExtendedKeyUsagePurpose::ServerAuth); },
-                2 => { params.extended_key_usages = vec![ExtendedKeyUsagePurpose::Any]; },
-                3 => { params.key_usages.push(KeyUsagePurpose::KeyCertSign); },
-                4 => { params.subject_alt_names = CertificateParams::new(vec!["other.example".to_owned()]).unwrap().subject_alt_names; },
-                _ => { params.custom_extensions.push(CustomExtension::from_oid_content(&[1, 2, 3, 4, 5], vec![0x05, 0])); },
+                0 => {
+                    params.is_ca = IsCa::Ca(BasicConstraints::Constrained(0));
+                }
+                1 => {
+                    params
+                        .extended_key_usages
+                        .push(ExtendedKeyUsagePurpose::ServerAuth);
+                }
+                2 => {
+                    params.extended_key_usages = vec![ExtendedKeyUsagePurpose::Any];
+                }
+                3 => {
+                    params.key_usages.push(KeyUsagePurpose::KeyCertSign);
+                }
+                4 => {
+                    params.subject_alt_names =
+                        CertificateParams::new(vec!["other.example".to_owned()])
+                            .unwrap()
+                            .subject_alt_names;
+                }
+                _ => {
+                    params
+                        .custom_extensions
+                        .push(CustomExtension::from_oid_content(
+                            &[1, 2, 3, 4, 5],
+                            vec![0x05, 0],
+                        ));
+                }
             }
-            let signed = params.signed_by(&csr.public_key, &issuer.certificate, &issuer.key).unwrap();
-            let mut bad = valid.clone(); replace_leaf(&mut bad, signed.der().to_vec());
+            let signed = params
+                .signed_by(&csr.public_key, &issuer.certificate, &issuer.key)
+                .unwrap();
+            let mut bad = valid.clone();
+            replace_leaf(&mut bad, signed.der().to_vec());
             rejected(&bad, &local, &scope);
         }
     }
@@ -729,13 +991,17 @@ mod tests {
     fn rotation_is_bound_to_expected_generation_and_new_fingerprint() {
         let (_, issuer, mut scope, local) = fixture();
         let first = response(&issuer, &scope, &local.csr_der);
-        scope.purpose = InvitePurpose::Rotate { expected_generation: 1 };
+        scope.purpose = InvitePurpose::Rotate {
+            expected_generation: 1,
+        };
         let next = generate_local_csr().unwrap();
         let rotated = response(&issuer, &scope, &next.csr_der);
         assert_eq!(rotated.generation, 2);
         assert_ne!(first.fingerprint, rotated.fingerprint);
         validate_enrollment_response(&rotated, &next.csr_der, &scope, REQUEST, NOW).unwrap();
-        assert!(validate_enrollment_response(&first, &local.csr_der, &scope, REQUEST, NOW).is_err());
+        assert!(
+            validate_enrollment_response(&first, &local.csr_der, &scope, REQUEST, NOW).is_err()
+        );
     }
 
     #[test]
@@ -750,18 +1016,30 @@ mod tests {
         let near_expiry = NOW + 5 * BOOTSTRAP_SERVER_LIFETIME_SECS - 1;
         assert!(issue_client_certificate(&csr, &scope, &issuer, near_expiry).is_err());
         assert!(issue_client_certificate(&csr, &scope, &issuer, near_expiry + 1).is_err());
-        scope.ca_certificate_der = generate_bootstrap(&["localhost".to_owned()], NOW).unwrap().ca_certificate_der;
+        scope.ca_certificate_der = generate_bootstrap(&["localhost".to_owned()], NOW)
+            .unwrap()
+            .ca_certificate_der;
         assert!(issue_client_certificate(&csr, &scope, &issuer, NOW).is_err());
     }
 
     #[test]
     fn bootstrap_is_server_only_and_accepts_only_explicit_valid_names() {
-        let fixture = generate_bootstrap(&["localhost".to_owned(), "127.0.0.1".to_owned()], NOW).unwrap();
+        let fixture =
+            generate_bootstrap(&["localhost".to_owned(), "127.0.0.1".to_owned()], NOW).unwrap();
         let server = parse_certificate(&fixture.server_certificate_der).unwrap();
         let eku = server.extended_key_usage().unwrap().unwrap().value;
         assert!(eku.server_auth && !eku.client_auth && !eku.any);
         assert!(!server.is_ca());
-        assert_eq!(server.subject_alternative_name().unwrap().unwrap().value.general_names.len(), 2);
+        assert_eq!(
+            server
+                .subject_alternative_name()
+                .unwrap()
+                .unwrap()
+                .value
+                .general_names
+                .len(),
+            2
+        );
         assert!(generate_bootstrap(&[], NOW).is_err());
         assert!(generate_bootstrap(&["*.example.com".to_owned()], NOW).is_err());
         assert!(generate_bootstrap(&["https://example.com".to_owned()], NOW).is_err());

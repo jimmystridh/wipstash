@@ -53,6 +53,20 @@ jobs:
           cargo test --locked --manifest-path services/transport/Cargo.toml --lib managed_service_tests
       - name: Enrollment TLS contracts
         run: cargo test --locked --manifest-path services/transport/Cargo.toml --lib enrollment
+      - name: Four-device guided pairing over real loopback TLS
+        env:
+          WIPSTASH_PAIRING_LIVE_CI: '1'
+        run: python tests/pairing_live_ci.py --artifacts evidence/pairing-live
+      - name: Save redacted pairing acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pairing-live-${{ runner.os }}-${{ github.sha }}
+          path: |
+            evidence/pairing-live/summary.json
+            evidence/pairing-live/safe-stderr.txt
+          if-no-files-found: warn
+          retention-days: 7
       - name: Native storage admission and Git paths
         run: |
           cargo test --locked --manifest-path services/storage/Cargo.toml canonical_roots_preserve_admission_checks

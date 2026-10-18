@@ -243,7 +243,14 @@ pub(super) fn configure(state: &Path, db: &Connection, r: &Value) -> R<Value> {
 pub(super) fn initialize_authority(state: &Path, db: &Connection, r: &Value) -> R<Value> {
     only_fields(
         r,
-        &["op", "operation_id", "project", "authority", "epoch", "device"],
+        &[
+            "op",
+            "operation_id",
+            "project",
+            "authority",
+            "epoch",
+            "device",
+        ],
     )?;
     let c = Config {
         project: field(r, "project")?.into(),
@@ -348,8 +355,7 @@ pub(super) fn add_peer(db: &Connection, r: &Value) -> R<Value> {
 /// Immutable SQLite avoids even WAL/shm creation. Pending journals fail closed
 /// instead of silently inspecting an older main-file snapshot.
 pub(super) fn binding_status(state: &Path) -> R<Value> {
-    let unconfigured =
-        || json!({"ok":true,"state":"unconfigured","initialized":false,"config":null,"pending_config":null});
+    let unconfigured = || json!({"ok":true,"state":"unconfigured","initialized":false,"config":null,"pending_config":null});
     match fs::symlink_metadata(state) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(unconfigured()),
         Err(e) => return Err(format!("io_error: {e}")),
@@ -377,7 +383,9 @@ pub(super) fn binding_status(state: &Path) -> R<Value> {
     for name in ["state.sqlite-wal", "state.sqlite-journal"] {
         match fs::symlink_metadata(state.join(name)) {
             Ok(m) if m.len() != 0 || !m.is_file() || m.file_type().is_symlink() => {
-                return Err("binding_inspection_requires_recovery: pending database journal".into());
+                return Err(
+                    "binding_inspection_requires_recovery: pending database journal".into(),
+                );
             }
             Ok(_) => (),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => (),
@@ -408,7 +416,9 @@ pub(super) fn binding_status(state: &Path) -> R<Value> {
         return Err("incomplete_state: binding without authority metadata".into());
     }
     let pending = pending_config(&db)?;
-    Ok(json!({"ok":true,"state":if c.is_some(){"configured"}else{"unconfigured"},"initialized":initialized,"config":c,"pending_config":pending}))
+    Ok(
+        json!({"ok":true,"state":if c.is_some(){"configured"}else{"unconfigured"},"initialized":initialized,"config":c,"pending_config":pending}),
+    )
 }
 pub(super) fn status(state: &Path, db: &Connection) -> R<Value> {
     let c = required(db)?;

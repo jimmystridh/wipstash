@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Local-only peer enrollment invariants. No sockets, credentials or process kills."""
 import json
+import contextlib
 import os
 from pathlib import Path
 import sqlite3
@@ -50,7 +51,7 @@ class PeerAuthorization(unittest.TestCase):
         return self.good(op='sync_status')['config']
 
     def execute_sql(self, sql, params=()):
-        with sqlite3.connect(self.state / 'state.sqlite') as db:
+        with contextlib.closing(sqlite3.connect(self.state / 'state.sqlite')) as db, db:
             return db.execute(sql, params).fetchall()
 
     def test_binding_probe_never_initializes_or_recovers(self):
@@ -68,7 +69,7 @@ class PeerAuthorization(unittest.TestCase):
         config = self.config()
         self.execute_sql("INSERT INTO meta VALUES('public_recovery_gate',?)", (json.dumps({'activation_required': True}),))
         # Close/checkpoint the test connection before inspecting an immutable snapshot.
-        with sqlite3.connect(self.state / 'state.sqlite') as db:
+        with contextlib.closing(sqlite3.connect(self.state / 'state.sqlite')) as db, db:
             db.execute('PRAGMA wal_checkpoint(TRUNCATE)')
         def snapshot():
             return {str(p.relative_to(self.state)): (p.stat().st_mtime_ns, p.stat().st_mode,

@@ -274,7 +274,7 @@ async fn acl_file_bound_is_checked_before_parsing() {
         .unwrap();
     c.state = tmp.path().join("state");
     c.staging = tmp.path().join("staging");
-    c.acl = tmp.path().join("acl.json");
+    c.acl = tmp.path().join("acl.json").into();
     std::fs::create_dir(&c.staging).unwrap();
     for request in [
         json!({"op":"init","source":source}),
