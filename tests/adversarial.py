@@ -277,7 +277,13 @@ class Adversarial(unittest.TestCase):
     def test_publish_after_pin_retry(self):
         write(self.paths['A'],'docs/saved.txt','accepted bytes\n');c=self.checkpoint('A')
         request=dict(op='publish',workspace='A',checkpoint=c['checkpoint'],intent='fault fixture',operation_id='interrupted-publish')
-        self.crash('publish_after_pin',**request);retry=self.req(**request);self.assertEqual(self.req(**request),retry)
+        self.crash('publish_after_pin',**request)
+        pinned=self.h.git(self.coordinator(),'rev-parse','refs/wipstash/proposals/interrupted-publish')
+        # Force the retry beyond Git's one-second commit timestamp resolution.
+        # Otherwise recreating a sibling commit can accidentally appear stable.
+        time.sleep(1.1)
+        retry=self.req(**request);self.assertEqual(retry['commit'],pinned);self.assertEqual(self.req(**request),retry)
+        self.assertEqual(self.h.git(self.state/'locals'/'A'/'objects.git','rev-parse','refs/wipstash/exports/interrupted-publish'),pinned)
         self.integrate();head=self.head();self.assertEqual(self.blob(head,'docs/saved.txt'),'accepted bytes')
         self.integrate();self.assertEqual(head,self.head())
     def test_promotion_before_cas_recovery(self):

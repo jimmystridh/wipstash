@@ -157,6 +157,73 @@ fn transfer(from: &Git, to: &Git, oid: &str, reference: &str) -> R<()> {
     )?;
     Ok(())
 }
+fn transfer_publication(from: &Git, to: &Git, commit: &str, reference: &str) -> R<()> {
+    if let Some(pinned) = to.direct_ref(reference)? {
+        return if pinned == commit {
+            // Matching ref text alone does not prove the saved object survived.
+            to.verified_object("commit", commit)?;
+            Ok(())
+        } else {
+            Err("publication_identity_conflict: coordinator proposal pin differs".into())
+        };
+    }
+    // Fetch only the validated public root, then install it create-only. A ref
+    // appearing during the fetch must never be silently fast-forwarded/replaced.
+    to.run_local_repository(
+        &[
+            "fetch",
+            "--no-tags",
+            "--no-write-fetch-head",
+            "--recurse-submodules=no",
+        ],
+        &from.repo,
+        &[commit],
+    )?;
+    to.create_ref(reference, commit)
+}
+fn publication_commit(git: &Git, id: &str, tree: &str, base: &str) -> R<String> {
+    let reference = format!("refs/wipstash/exports/{id}");
+    let message = format!("proposal {id}");
+    if let Some(commit) = git.direct_ref(&reference)? {
+        // The operation journal already binds the complete request. Validate the
+        // pinned object as well: never reuse a different snapshot, operation, or
+        // private checkpoint ancestry. Preserve its original timestamp and OID.
+        let bytes = git.verified_object("commit", &commit)?;
+        let body = String::from_utf8(bytes)
+            .map_err(|_| "publication_identity_conflict: invalid pinned commit")?;
+        let (headers, body) = body
+            .split_once("\n\n")
+            .ok_or("publication_identity_conflict: invalid pinned commit")?;
+        let headers: Vec<_> = headers.split('\n').collect();
+        if headers.len() != 4
+            || headers[0] != format!("tree {tree}")
+            || headers[1] != format!("parent {base}")
+            || !publication_signature(headers[2], "author")
+            || !publication_signature(headers[3], "committer")
+            || body != format!("{message}\n")
+        {
+            return Err("publication_identity_conflict: export pin does not match request".into());
+        }
+        return Ok(commit);
+    }
+    let commit = git.commit(tree, &[base.to_owned()], &message)?;
+    git.create_ref(&reference, &commit)?;
+    Ok(commit)
+}
+fn publication_signature(header: &str, role: &str) -> bool {
+    let Some(date) = header.strip_prefix(&format!("{role} Wipstash <wipstash@localhost> ")) else {
+        return false;
+    };
+    let Some((timestamp, zone)) = date.split_once(' ') else {
+        return false;
+    };
+    !timestamp.is_empty()
+        && timestamp.bytes().all(|b| b.is_ascii_digit())
+        && timestamp.parse::<u64>().is_ok()
+        && zone.len() == 5
+        && matches!(zone.as_bytes()[0], b'+' | b'-')
+        && zone[1..].bytes().all(|b| b.is_ascii_digit())
+}
 fn init_db(db: &Connection) -> R<()> {
     sql(db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON;
  CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
@@ -717,15 +784,10 @@ fn publish(state: &Path, db: &Connection, r: &Value) -> R<Value> {
         return Err("invalid_request: intent too large".into());
     }
     let git = local(state, wid);
-    let commit = git.commit(
-        &tree,
-        std::slice::from_ref(&base),
-        &format!("proposal {id}"),
-    )?;
-    git.set_ref(&format!("refs/wipstash/exports/{id}"), &commit, None)?;
+    let commit = publication_commit(&git, id, &tree, &base)?;
     let online = coordinator(state).repo.exists() && !sync::is_client(db)?;
     if online {
-        transfer(
+        transfer_publication(
             &git,
             &coordinator(state),
             &commit,
@@ -772,7 +834,7 @@ fn integrate(state: &Path, db: &Connection, r: &Value) -> R<Value> {
         ))
     }))? {
         let (id, wid, commit) = sql(row)?;
-        transfer(
+        transfer_publication(
             &local(state, &wid),
             &git,
             &commit,
@@ -1390,6 +1452,393 @@ mod regression_tests {
                 fs::read(p.0.join(workspace).join("a")).unwrap(),
                 b"original"
             );
+        }
+    }
+
+    fn pending_publication(p: &Project, request: &Value) {
+        let db = Connection::open(p.0.join("state/state.sqlite")).unwrap();
+        db.execute(
+            "INSERT INTO operations(id,digest,request) VALUES(?1,?2,?3)",
+            params![
+                request["operation_id"].as_str().unwrap(),
+                digest(request),
+                request.to_string()
+            ],
+        )
+        .unwrap();
+    }
+
+    fn historical_publication(git: &Git, tree: &str, parents: &[&str], message: &str) -> String {
+        // Seed the pinned state before the proposal/result transaction commits,
+        // without terminating a child or waiting for a timestamp boundary. This
+        // cannot equal a newly generated commit, even within the same second.
+        let parents = parents
+            .iter()
+            .map(|p| format!("parent {p}\n"))
+            .collect::<String>();
+        let body = format!("tree {tree}\n{parents}author Wipstash <wipstash@localhost> 946684800 +0000\ncommitter Wipstash <wipstash@localhost> 946684800 +0000\n\n{message}\n");
+        String::from_utf8(
+            git.run(
+                &["hash-object", "-w", "-t", "commit", "--stdin"],
+                Some(body.as_bytes()),
+            )
+            .unwrap(),
+        )
+        .unwrap()
+        .trim()
+        .into()
+    }
+
+    #[test]
+    fn publication_retry_preserves_historical_pin_before_and_after_transfer() {
+        for transferred in [false, true] {
+            let p = Project::new();
+            fs::write(p.0.join("A/private-only"), "never publish this ancestor").unwrap();
+            let private = p.request(json!({"op":"checkpoint","workspace":"A","expected_generation":0,"operation_id":"private-cp"}));
+            fs::remove_file(p.0.join("A/private-only")).unwrap();
+            fs::write(p.0.join("A/a"), "selected public snapshot").unwrap();
+            let chosen = p.request(json!({"op":"checkpoint","workspace":"A","expected_generation":1,"operation_id":"selected-cp"}));
+            fs::write(p.0.join("A/a"), "newer private WIP").unwrap();
+            let state = p.0.join("state");
+            let git = local(&state, "A");
+            let public = coordinator(&state);
+            let base = chosen["adopted"].as_str().unwrap();
+            let tree = chosen["tree"].as_str().unwrap();
+            let commit =
+                historical_publication(&git, tree, &[base], "proposal interrupted-publish");
+            let export = "refs/wipstash/exports/interrupted-publish";
+            let proposal = "refs/wipstash/proposals/interrupted-publish";
+            git.create_ref(export, &commit).unwrap();
+            if transferred {
+                transfer(&git, &public, &commit, proposal).unwrap();
+            }
+            let request = json!({"op":"publish","workspace":"A","checkpoint":"selected-cp","intent":"fault fixture","operation_id":"interrupted-publish"});
+            pending_publication(&p, &request);
+            let retry = p.request(request.clone());
+            assert_eq!(retry["commit"], commit);
+            assert_eq!(retry, p.request(request));
+            assert_eq!(git.head(export).unwrap(), commit);
+            assert_eq!(public.head(proposal).unwrap(), commit);
+            let blob = public.head(&format!("{commit}:a")).unwrap();
+            assert_eq!(
+                public.verified_object("blob", &blob).unwrap(),
+                b"selected public snapshot"
+            );
+            for checkpoint in [&private, &chosen] {
+                assert!(public
+                    .run(
+                        &["cat-file", "-e", checkpoint["commit"].as_str().unwrap()],
+                        None
+                    )
+                    .is_err());
+            }
+            assert_eq!(fs::read(p.0.join("A/a")).unwrap(), b"newer private WIP");
+            let db = Connection::open(state.join("state.sqlite")).unwrap();
+            assert_eq!(
+                db.query_row(
+                    "SELECT COUNT(*) FROM proposals WHERE id='interrupted-publish'",
+                    [],
+                    |r| r.get::<_, i64>(0)
+                )
+                .unwrap(),
+                1
+            );
+            assert_eq!(
+                db.query_row(
+                    "SELECT COUNT(*) FROM events WHERE kind='published'",
+                    [],
+                    |r| r.get::<_, i64>(0)
+                )
+                .unwrap(),
+                1
+            );
+            p.request(json!({"op":"integrate"}));
+            let head = public.head(HEAD).unwrap();
+            p.request(json!({"op":"integrate"}));
+            assert_eq!(public.head(HEAD).unwrap(), head);
+        }
+    }
+
+    #[test]
+    fn publication_pending_request_binding_rejects_same_content_changes() {
+        let p = Project::new();
+        let chosen = p.request(json!({"op":"checkpoint","workspace":"A","expected_generation":0,"operation_id":"first-cp"}));
+        let same = p.request(json!({"op":"checkpoint","workspace":"A","expected_generation":1,"operation_id":"second-cp"}));
+        assert_eq!(chosen["tree"], same["tree"]);
+        assert_eq!(chosen["adopted"], same["adopted"]);
+        let state = p.0.join("state");
+        let git = local(&state, "A");
+        let commit = historical_publication(
+            &git,
+            chosen["tree"].as_str().unwrap(),
+            &[chosen["adopted"].as_str().unwrap()],
+            "proposal bound-publish",
+        );
+        let export = "refs/wipstash/exports/bound-publish";
+        git.create_ref(export, &commit).unwrap();
+        let request = json!({"op":"publish","workspace":"A","checkpoint":"first-cp","intent":"original intent","operation_id":"bound-publish"});
+        pending_publication(&p, &request);
+        for (key, replacement) in [
+            ("intent", "different intent"),
+            ("checkpoint", "second-cp"),
+            ("workspace", "B"),
+        ] {
+            let mut changed = request.clone();
+            changed[key] = json!(replacement);
+            assert!(execute(&state, changed)
+                .unwrap_err()
+                .starts_with("idempotency_mismatch:"));
+            assert_eq!(git.head(export).unwrap(), commit);
+            assert_eq!(
+                coordinator(&state)
+                    .direct_ref("refs/wipstash/proposals/bound-publish")
+                    .unwrap(),
+                None
+            );
+            assert_eq!(
+                p.request(json!({"op":"operation_status","operation_id":"bound-publish"}))["state"],
+                "pending"
+            );
+        }
+        let result = p.request(request.clone());
+        assert_eq!(result["commit"], commit);
+        assert_eq!(p.request(request), result);
+    }
+
+    #[test]
+    fn publication_retry_rejects_conflicting_export_bindings_without_transfer() {
+        for mismatch in [
+            "tree",
+            "parent",
+            "message",
+            "extra_parent",
+            "identity",
+            "extra_header",
+            "symbolic",
+            "dangling_symbolic",
+            "missing_object",
+        ] {
+            let p = Project::new();
+            fs::write(p.0.join("A/a"), "chosen snapshot").unwrap();
+            let cp = p.request(json!({"op":"checkpoint","workspace":"A","expected_generation":0,"operation_id":"chosen-cp"}));
+            let state = p.0.join("state");
+            let git = local(&state, "A");
+            let base = cp["adopted"].as_str().unwrap();
+            let tree = cp["tree"].as_str().unwrap();
+            let other_tree = git.empty_tree().unwrap();
+            let private = cp["commit"].as_str().unwrap();
+            let parents = match mismatch {
+                "parent" => vec![private],
+                "extra_parent" => vec![base, private],
+                _ => vec![base],
+            };
+            let mut commit = historical_publication(
+                &git,
+                if mismatch == "tree" {
+                    &other_tree
+                } else {
+                    tree
+                },
+                &parents,
+                if mismatch == "message" {
+                    "proposal someone-else"
+                } else {
+                    "proposal conflict-publish"
+                },
+            );
+            if matches!(mismatch, "identity" | "extra_header") {
+                let body =
+                    String::from_utf8(git.verified_object("commit", &commit).unwrap()).unwrap();
+                let body = if mismatch == "identity" {
+                    body.replace("Wipstash <wipstash@localhost>", "Other <other@localhost>")
+                } else {
+                    body.replacen("\n\n", "\nencoding UTF-8\n\n", 1)
+                };
+                commit = String::from_utf8(
+                    git.run(
+                        &["hash-object", "-w", "-t", "commit", "--stdin"],
+                        Some(body.as_bytes()),
+                    )
+                    .unwrap(),
+                )
+                .unwrap()
+                .trim()
+                .into();
+            }
+            let export = "refs/wipstash/exports/conflict-publish";
+            match mismatch {
+                "symbolic" | "dangling_symbolic" => {
+                    let target = if mismatch == "symbolic" {
+                        HEAD
+                    } else {
+                        "refs/wipstash/absent"
+                    };
+                    git.run(&["symbolic-ref", export, target], None).unwrap();
+                }
+                "missing_object" => {
+                    fs::create_dir_all(git.repo.join("refs/wipstash/exports")).unwrap();
+                    fs::write(git.repo.join(export), format!("{}\n", "1".repeat(40))).unwrap();
+                }
+                _ => git.create_ref(export, &commit).unwrap(),
+            }
+            let before = fs::read(git.repo.join(export)).unwrap();
+            let request = json!({"op":"publish","workspace":"A","checkpoint":"chosen-cp","intent":"original intent","operation_id":"conflict-publish"});
+            pending_publication(&p, &request);
+            let failure = execute(&state, request.clone()).unwrap();
+            assert_eq!(failure["ok"], false, "{mismatch}: {failure}");
+            assert_eq!(execute(&state, request).unwrap(), failure);
+            assert_eq!(
+                fs::read(git.repo.join(export)).unwrap(),
+                before,
+                "{mismatch}"
+            );
+            assert_eq!(
+                coordinator(&state)
+                    .direct_ref("refs/wipstash/proposals/conflict-publish")
+                    .unwrap(),
+                None
+            );
+            assert!(coordinator(&state)
+                .run(&["cat-file", "-e", private], None)
+                .is_err());
+            let db = Connection::open(state.join("state.sqlite")).unwrap();
+            assert_eq!(
+                db.query_row("SELECT COUNT(*) FROM proposals", [], |r| r.get::<_, i64>(0))
+                    .unwrap(),
+                0
+            );
+            assert_eq!(
+                db.query_row(
+                    "SELECT COUNT(*) FROM events WHERE kind='published'",
+                    [],
+                    |r| r.get::<_, i64>(0)
+                )
+                .unwrap(),
+                0
+            );
+        }
+    }
+
+    #[test]
+    fn publication_retry_rejects_coordinator_conflicts_and_missing_objects() {
+        for missing_object in [false, true] {
+            let p = Project::new();
+            let cp = p.request(json!({"op":"checkpoint","workspace":"A","expected_generation":0,"operation_id":"chosen-cp"}));
+            let state = p.0.join("state");
+            let git = local(&state, "A");
+            let public = coordinator(&state);
+            let base = cp["adopted"].as_str().unwrap();
+            let commit = historical_publication(
+                &git,
+                cp["tree"].as_str().unwrap(),
+                &[base],
+                "proposal conflict-publish",
+            );
+            let export = "refs/wipstash/exports/conflict-publish";
+            let proposal = "refs/wipstash/proposals/conflict-publish";
+            git.create_ref(export, &commit).unwrap();
+            // The conflicting existing base is an ancestor: a normal fetch may
+            // accept this update, but an operation's immutable pin must not.
+            if missing_object {
+                fs::create_dir_all(public.repo.join("refs/wipstash/proposals")).unwrap();
+                fs::write(public.repo.join(proposal), format!("{commit}\n")).unwrap();
+            } else {
+                public.create_ref(proposal, base).unwrap();
+            }
+            let before = fs::read(public.repo.join(proposal)).unwrap();
+            let request = json!({"op":"publish","workspace":"A","checkpoint":"chosen-cp","intent":"original intent","operation_id":"conflict-publish"});
+            pending_publication(&p, &request);
+            let failure = execute(&state, request.clone()).unwrap();
+            assert_eq!(failure["ok"], false, "{failure}");
+            assert_eq!(execute(&state, request).unwrap(), failure);
+            assert_eq!(git.head(export).unwrap(), commit);
+            assert_eq!(fs::read(public.repo.join(proposal)).unwrap(), before);
+            let db = Connection::open(state.join("state.sqlite")).unwrap();
+            assert_eq!(
+                db.query_row("SELECT COUNT(*) FROM proposals", [], |r| r.get::<_, i64>(0))
+                    .unwrap(),
+                0
+            );
+        }
+    }
+
+    #[test]
+    fn publication_retry_without_local_pin_does_not_replace_coordinator_pin() {
+        let p = Project::new();
+        let cp = p.request(json!({"op":"checkpoint","workspace":"A","expected_generation":0,"operation_id":"chosen-cp"}));
+        let state = p.0.join("state");
+        let git = local(&state, "A");
+        let public = coordinator(&state);
+        let commit = historical_publication(
+            &git,
+            cp["tree"].as_str().unwrap(),
+            &[cp["adopted"].as_str().unwrap()],
+            "proposal interrupted-publish",
+        );
+        let proposal = "refs/wipstash/proposals/interrupted-publish";
+        transfer(&git, &public, &commit, proposal).unwrap();
+        let request = json!({"op":"publish","workspace":"A","checkpoint":"chosen-cp","intent":"original intent","operation_id":"interrupted-publish"});
+        pending_publication(&p, &request);
+        let failure = execute(&state, request.clone()).unwrap();
+        assert_eq!(failure["ok"], false, "{failure}");
+        assert_eq!(failure["error"]["code"], "publication_identity_conflict");
+        assert_eq!(execute(&state, request).unwrap(), failure);
+        assert_eq!(public.head(proposal).unwrap(), commit);
+    }
+
+    #[test]
+    fn publication_offline_flush_preserves_pin_and_rejects_coordinator_conflict() {
+        for conflict in [false, true] {
+            let p = Project::new();
+            fs::write(p.0.join("A/a"), "queued snapshot").unwrap();
+            let cp = p.request(json!({"op":"checkpoint","workspace":"A","expected_generation":0,"operation_id":"chosen-cp"}));
+            let state = p.0.join("state");
+            let git = local(&state, "A");
+            let public = coordinator(&state);
+            let base = cp["adopted"].as_str().unwrap();
+            let commit = historical_publication(
+                &git,
+                cp["tree"].as_str().unwrap(),
+                &[base],
+                "proposal queued-publish",
+            );
+            let export = "refs/wipstash/exports/queued-publish";
+            let proposal = "refs/wipstash/proposals/queued-publish";
+            git.create_ref(export, &commit).unwrap();
+            let request = json!({"op":"publish","workspace":"A","checkpoint":"chosen-cp","intent":"original intent","operation_id":"queued-publish"});
+            pending_publication(&p, &request);
+            let offline = state.join("offline.git");
+            fs::rename(&public.repo, &offline).unwrap();
+            let queued = p.request(request.clone());
+            assert_eq!(queued["state"], "queued_offline");
+            assert_eq!(queued["commit"], commit);
+            fs::rename(&offline, &public.repo).unwrap();
+            if conflict {
+                public.create_ref(proposal, base).unwrap();
+                assert!(execute(&state, json!({"op":"integrate"}))
+                    .unwrap_err()
+                    .starts_with("publication_identity_conflict:"));
+                assert_eq!(public.head(proposal).unwrap(), base);
+                let db = Connection::open(state.join("state.sqlite")).unwrap();
+                assert_eq!(
+                    db.query_row(
+                        "SELECT state FROM proposals WHERE id='queued-publish'",
+                        [],
+                        |r| r.get::<_, String>(0)
+                    )
+                    .unwrap(),
+                    "local_queued"
+                );
+            } else {
+                p.request(json!({"op":"integrate"}));
+                assert_eq!(public.head(proposal).unwrap(), commit);
+                assert_eq!(
+                    p.request(json!({"op":"proposal_status","proposal":"queued-publish"}))["state"],
+                    "integrated"
+                );
+            }
+            assert_eq!(git.head(export).unwrap(), commit);
+            assert_eq!(p.request(request), queued);
         }
     }
 

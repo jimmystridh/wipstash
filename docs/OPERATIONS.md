@@ -92,6 +92,8 @@ Use returned generations or query `status`. Checkpoint, successful adoption, exp
 
 Publication never means adoption. Private history is retained in each workspace's object store; publication builds export ancestry from the adopted public base rather than private checkpoint parents. Initial import and published snapshot contents are public. Exclusions are a fixed filename policy, **not secret detection**: credentials in an ordinary source file can still be published.
 
+An interrupted publication retried with the identical request reuses its original pinned public commit, including its timestamp and object ID. The saved pin must match the selected checkpoint tree, public base, and operation identity. Conflicting export or coordinator proposal pins fail closed rather than being overwritten; private checkpoint ancestry is never used to repair a publication.
+
 ## Background operation
 
 After initialization, run this in a separate terminal:

@@ -432,6 +432,56 @@ impl Git {
             None,
         )?)
     }
+    /// Read an exact, direct ref without treating broken or symbolic refs as absent.
+    pub(crate) fn direct_ref(&self, refname: &str) -> Result<Option<String>> {
+        if !refname.starts_with("refs/") {
+            return Err("reference must start with refs/".into());
+        }
+        self.run(&["check-ref-format", refname], None)?;
+        let symbolic = execute(self.cmd(&["symbolic-ref", "--quiet", refname])?, None)?;
+        match symbolic.status.code() {
+            Some(0) => return Err("reference_conflict: symbolic pin is not supported".into()),
+            Some(1) => {}
+            _ => return checked(symbolic).map(|_| None),
+        }
+        let output = self.run(
+            &[
+                "for-each-ref",
+                "--format=%(refname)%00%(objectname)%00%(symref)",
+                refname,
+            ],
+            None,
+        )?;
+        if output.is_empty() {
+            return Ok(None);
+        }
+        let output = String::from_utf8(output).map_err(err)?;
+        let fields: Vec<_> = output.trim_end_matches('\n').split('\0').collect();
+        if fields.len() != 3 || fields[0] != refname || !fields[2].is_empty() {
+            return Err("reference_conflict: expected one exact direct reference".into());
+        }
+        valid_oid(fields[1])?;
+        Ok(Some(fields[1].to_owned()))
+    }
+    /// Create an immutable pin; never overwrite a ref or follow a symbolic ref.
+    pub(crate) fn create_ref(&self, refname: &str, object: &str) -> Result<()> {
+        valid_oid(object)?;
+        if !refname.starts_with("refs/") {
+            return Err("reference must start with refs/".into());
+        }
+        self.run(&["check-ref-format", refname], None)?;
+        self.run(
+            &[
+                "update-ref",
+                "--no-deref",
+                refname,
+                object,
+                &"0".repeat(object.len()),
+            ],
+            None,
+        )?;
+        Ok(())
+    }
     pub fn set_ref(&self, refname: &str, object: &str, old: Option<&str>) -> Result<()> {
         valid_oid(object)?;
         if !refname.starts_with("refs/") {
@@ -844,6 +894,34 @@ mod tests {
         assert!(real_directory(&file).is_err());
         assert!(real_directory(&file.join("descendant")).is_err());
         assert!(real_directory(&root.join("missing")).is_err());
+    }
+
+    #[test]
+    fn immutable_reference_creation_never_replaces_existing_pins() {
+        let t = Temp::new();
+        let git = Git::init(&t.0.join("pins.git")).unwrap();
+        let tree = git.empty_tree().unwrap();
+        let first = git.commit(&tree, &[], "first").unwrap();
+        let second = git.commit(&tree, &[], "second").unwrap();
+        let reference = "refs/wipstash/exports/immutable";
+        assert_eq!(git.direct_ref(reference).unwrap(), None);
+        git.create_ref(reference, &first).unwrap();
+        assert!(git.create_ref(reference, &second).is_err());
+        assert_eq!(git.direct_ref(reference).unwrap(), Some(first));
+        let symbolic = "refs/wipstash/exports/symbolic";
+        git.run(&["symbolic-ref", symbolic, reference], None)
+            .unwrap();
+        assert!(git.direct_ref(symbolic).is_err());
+        assert!(git.create_ref(symbolic, &second).is_err());
+        assert_eq!(
+            git.run(&["symbolic-ref", symbolic], None).unwrap(),
+            format!("{reference}\n").as_bytes()
+        );
+        let dangling = "refs/wipstash/exports/dangling";
+        git.run(&["symbolic-ref", dangling, "refs/wipstash/absent"], None)
+            .unwrap();
+        assert!(git.direct_ref(dangling).is_err());
+        assert!(git.create_ref(dangling, &second).is_err());
     }
 
     #[test]
