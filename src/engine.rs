@@ -195,12 +195,14 @@ fn publication_commit(git: &Git, id: &str, tree: &str, base: &str) -> R<String> 
             .split_once("\n\n")
             .ok_or("publication_identity_conflict: invalid pinned commit")?;
         let headers: Vec<_> = headers.split('\n').collect();
+        // Git::commit writes the exact stdin message without an added LF.
+        // Do not trim or normalize bytes when checking the operation binding.
         if headers.len() != 4
             || headers[0] != format!("tree {tree}")
             || headers[1] != format!("parent {base}")
             || !publication_signature(headers[2], "author")
             || !publication_signature(headers[3], "committer")
-            || body != format!("{message}\n")
+            || body != message
         {
             return Err("publication_identity_conflict: export pin does not match request".into());
         }
@@ -1472,11 +1474,28 @@ mod regression_tests {
         // Seed the pinned state before the proposal/result transaction commits,
         // without terminating a child or waiting for a timestamp boundary. This
         // cannot equal a newly generated commit, even within the same second.
-        let parents = parents
-            .iter()
-            .map(|p| format!("parent {p}\n"))
-            .collect::<String>();
-        let body = format!("tree {tree}\n{parents}author Wipstash <wipstash@localhost> 946684800 +0000\ncommitter Wipstash <wipstash@localhost> 946684800 +0000\n\n{message}\n");
+        // Derive the fixture from the production commit writer. In particular,
+        // commit-tree preserves the supplied message bytes, including whether
+        // they end in LF; a hand-built fixture must not invent that terminator.
+        let parents = parents.iter().map(|p| (*p).to_owned()).collect::<Vec<_>>();
+        let original = git.commit(tree, &parents, message).unwrap();
+        let original =
+            String::from_utf8(git.verified_object("commit", &original).unwrap()).unwrap();
+        let (headers, message) = original.split_once("\n\n").unwrap();
+        let headers = headers
+            .split('\n')
+            .map(|header| {
+                if header.starts_with("author ") {
+                    "author Wipstash <wipstash@localhost> 946684800 +0000"
+                } else if header.starts_with("committer ") {
+                    "committer Wipstash <wipstash@localhost> 946684800 +0000"
+                } else {
+                    header
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let body = format!("{headers}\n\n{message}");
         String::from_utf8(
             git.run(
                 &["hash-object", "-w", "-t", "commit", "--stdin"],
@@ -1560,6 +1579,48 @@ mod regression_tests {
     }
 
     #[test]
+    fn publication_retry_preserves_real_git_pin_before_and_after_transfer() {
+        for transferred in [false, true] {
+            let p = Project::new();
+            fs::write(p.0.join("A/a"), "chosen snapshot").unwrap();
+            let cp = p.request(json!({"op":"checkpoint","workspace":"A","expected_generation":0,"operation_id":"chosen-cp"}));
+            let state = p.0.join("state");
+            let git = local(&state, "A");
+            let public = coordinator(&state);
+            let request = json!({"op":"publish","workspace":"A","checkpoint":"chosen-cp","intent":"fault fixture","operation_id":"real-pin-publish"});
+            pending_publication(&p, &request);
+            // Use the production pin constructor to model the interrupted
+            // prefix, without process termination or synthesizing commit bytes.
+            let commit = publication_commit(
+                &git,
+                "real-pin-publish",
+                cp["tree"].as_str().unwrap(),
+                cp["adopted"].as_str().unwrap(),
+            )
+            .unwrap();
+            let bytes = git.verified_object("commit", &commit).unwrap();
+            let body = String::from_utf8(bytes.clone()).unwrap();
+            assert_eq!(
+                body.split_once("\n\n").unwrap().1,
+                "proposal real-pin-publish"
+            );
+            let proposal = "refs/wipstash/proposals/real-pin-publish";
+            if transferred {
+                transfer_publication(&git, &public, &commit, proposal).unwrap();
+            }
+            let retry = p.request(request.clone());
+            assert_eq!(retry["commit"], commit);
+            assert_eq!(p.request(request), retry);
+            assert_eq!(
+                git.head("refs/wipstash/exports/real-pin-publish").unwrap(),
+                commit
+            );
+            assert_eq!(public.head(proposal).unwrap(), commit);
+            assert_eq!(public.verified_object("commit", &commit).unwrap(), bytes);
+        }
+    }
+
+    #[test]
     fn publication_pending_request_binding_rejects_same_content_changes() {
         let p = Project::new();
         let chosen = p.request(json!({"op":"checkpoint","workspace":"A","expected_generation":0,"operation_id":"first-cp"}));
@@ -1611,6 +1672,11 @@ mod regression_tests {
             "tree",
             "parent",
             "message",
+            "newline",
+            "extra_newline",
+            "crlf",
+            "trailing_space",
+            "trailing_text",
             "extra_parent",
             "identity",
             "extra_header",
@@ -1640,10 +1706,14 @@ mod regression_tests {
                     tree
                 },
                 &parents,
-                if mismatch == "message" {
-                    "proposal someone-else"
-                } else {
-                    "proposal conflict-publish"
+                match mismatch {
+                    "message" => "proposal someone-else",
+                    "newline" => "proposal conflict-publish\n",
+                    "extra_newline" => "proposal conflict-publish\n\n",
+                    "crlf" => "proposal conflict-publish\r\n",
+                    "trailing_space" => "proposal conflict-publish ",
+                    "trailing_text" => "proposal conflict-publish\nextra text",
+                    _ => "proposal conflict-publish",
                 },
             );
             if matches!(mismatch, "identity" | "extra_header") {
