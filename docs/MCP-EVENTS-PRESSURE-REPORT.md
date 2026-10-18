@@ -135,3 +135,50 @@ outer timeout remains. A passing rerun will not establish that the observed
 cross-platform performance disparity disappeared. The newly instrumented local
 Linux run completed in 16.208 seconds, including setup and validation as well
 as the 7,680 raced operations; macOS phase calibration awaits CI.
+
+### Delivery campaign budget calibration
+
+At `5bb87a98`, [native CI 39139141065, Windows job 117709751555](https://github.com/jimmystridh/wipstash/actions/runs/39139141065/job/117709751555)
+passed three of five delivery tests. The gated-generation campaign hit its
+30-second aggregate cutoff after two complete seeds (192 of 288 races), and
+the concurrent-delivery campaign hit its 45-second aggregate cutoff. These are
+incomplete correctness campaigns, not passed stress tests or proof of a
+delivery-invariant failure. The same Windows run completed all 96 auth rounds
+in 100.561 seconds; the Linux auth observation above was 16.208 seconds. That
+disparity motivates collecting platform-specific timings, not claiming a
+particular filesystem cause or extrapolating a throughput guarantee.
+
+The delivery tests now preserve 30/45 seconds as informational performance
+references and use a separate 300-second liveness guard for each entire
+three-seed campaign, matching the auth campaign's guard. This finite allowance
+lets the full durable workload be measured on native runners; it is not a new
+performance target. Start/end and quarter-phase progress report only synthetic
+seeds, phase names, completed/expected counts and timings. Exceeding a reference
+is explicitly reported even when correctness completes. Every phase must finish
+its expected count before the next phase begins. Tokio's timeout is cooperative
+and cannot preempt synchronous database/filesystem calls; the existing CI job
+timeout remains the final backstop. Cleanup is included in the measured total.
+
+All three seeds, eight actors, 512 steps per actor, 96 gated races per seed,
+eight competing ticks per race, retry-drain ticks and security assertions remain.
+The other three delivery tests and the core-pressure 90-second limit are
+unchanged. Production code, private-file validation and SQLite `synchronous=FULL`
+are unchanged. No listener, actual callback receiver or real credential is used.
+
+Local Linux baseline: five of five delivery tests passed in 4.64 seconds.
+The first instrumented run also passed five of five: concurrent delivery took
+4.110 seconds (12,288 actor steps and 18,353 actions across three seeds), and
+gated races took 0.451 seconds (288 races, 2,304 competing ticks). These are
+single-run observations with freely varying Tokio interleavings, not evidence
+of a speedup. Native Windows/macOS verification of this change is still pending;
+a passing rerun will not establish that the performance disparity disappeared.
+The progress counter adds a test-only mutex after each completed step and
+periodic log writes, so the instrumented run is not an overhead-neutral benchmark
+and can vary task interleavings. No delivery operation is moved under that mutex.
+
+Final local verification used `cargo test --locked --offline --manifest-path
+services/mcp-events/Cargo.toml --all-targets -- --show-output`: all 73 tests
+passed (65 unit, one CLI pressure, five delivery, two SQLite-runtime). The final
+delivery campaign measurements were 4.001 seconds and 0.386 seconds respectively;
+the auth campaign completed all 96 rounds in 11.709 seconds. Package formatter
+check, strict all-target Clippy and `git diff --check` also passed.

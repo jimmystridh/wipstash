@@ -85,6 +85,8 @@ jobs:
           python tests/sync_peer_authorization.py
       - name: Agent conflict resolution core contracts
         run: cargo test --locked engine::regression_tests::resolution_
+      - name: Read-only MCP Events and GitHub identity contracts
+        run: cargo test --locked --manifest-path services/mcp-events/Cargo.toml -- --show-output
       - name: Four-actor agent conflict stress campaign
         env:
           WIPSTASH_CONFLICT_STRESS_CI: '1'
@@ -112,8 +114,6 @@ jobs:
         run: cargo test --locked --manifest-path crates/platform/Cargo.toml
       - name: Read-only inspector contracts
         run: cargo test --locked --manifest-path services/inspector/Cargo.toml
-      - name: Read-only MCP Events and GitHub identity contracts
-        run: cargo test --locked --manifest-path services/mcp-events/Cargo.toml -- --show-output
       - name: Build authenticated transport
         run: cargo build --locked --manifest-path services/transport/Cargo.toml
       - name: Guided pairing contracts

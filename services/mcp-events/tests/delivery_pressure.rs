@@ -23,6 +23,116 @@ const ACTORS: usize = 8;
 const SEEDS: [u64; 3] = [0x5eed_0001, 0xdec0_de02, 0xcafe_0003];
 const RECORD_LIMIT: usize = 32_768;
 const PRESSURE_CAPACITY: usize = 1024;
+const PRESSURE_STEPS: usize = 512;
+const RACE_ROUNDS: usize = 96;
+const COMPETING_TICKS: usize = 8;
+// Native Windows completed two race seeds before the old 30-second aggregate
+// cutoff; the concurrent campaign also exhausted its 45-second cutoff. These
+// durable SQLite correctness workloads are not cross-platform throughput SLOs.
+// Retain those references in the output and give all seeds a separate finite
+// liveness budget, consistent with auth_pressure_tests. Tokio timeouts are
+// cooperative: synchronous filesystem/database work cannot be interrupted, so
+// the CI job's outer timeout remains the final backstop. Do not reduce work,
+// relax assertions, or change production SQLite durability to fit a reference.
+const CAMPAIGN_LIVENESS_BUDGET: Duration = Duration::from_secs(300);
+
+struct PhaseProgress {
+    seed: u64,
+    phase: &'static str,
+    started: Instant,
+    completed: usize,
+    expected: usize,
+}
+
+struct Campaign {
+    name: &'static str,
+    started: Instant,
+    performance_reference: Duration,
+    progress: Mutex<Option<PhaseProgress>>,
+}
+
+impl Campaign {
+    fn new(name: &'static str, performance_reference: Duration) -> Self {
+        eprintln!(
+            "{name}_START seeds={} reference_seconds={} liveness_seconds={}",
+            SEEDS.len(),
+            performance_reference.as_secs(),
+            CAMPAIGN_LIVENESS_BUDGET.as_secs()
+        );
+        Self {
+            name,
+            started: Instant::now(),
+            performance_reference,
+            progress: Mutex::new(None),
+        }
+    }
+
+    fn phase(&self, seed: u64, phase: &'static str, expected: usize) {
+        let mut progress = self.progress.lock().unwrap();
+        if let Some(previous) = &*progress {
+            assert_eq!(previous.completed, previous.expected, "incomplete phase");
+        }
+        let next = PhaseProgress {
+            seed,
+            phase,
+            started: Instant::now(),
+            completed: 0,
+            expected,
+        };
+        self.report(&next);
+        *progress = Some(next);
+    }
+
+    fn completed(&self) {
+        let mut progress = self.progress.lock().unwrap();
+        let progress = progress.as_mut().unwrap();
+        progress.completed += 1;
+        assert!(progress.completed <= progress.expected);
+        if progress.completed == progress.expected
+            || progress
+                .completed
+                .is_multiple_of((progress.expected / 4).max(1))
+        {
+            self.report(progress);
+        }
+    }
+
+    fn report(&self, progress: &PhaseProgress) {
+        eprintln!(
+            "{}_PROGRESS seed={} phase={} completed={} expected={} phase_elapsed_ms={} total_elapsed_ms={}",
+            self.name, progress.seed, progress.phase, progress.completed, progress.expected,
+            progress.started.elapsed().as_millis(), self.started.elapsed().as_millis()
+        );
+    }
+
+    fn finish(&self, completed: bool) {
+        let progress = self.progress.lock().unwrap();
+        if let Some(progress) = &*progress {
+            self.report(progress);
+        }
+        let elapsed = self.started.elapsed();
+        if elapsed > self.performance_reference {
+            eprintln!("{}_PERFORMANCE_REFERENCE_EXCEEDED reference_seconds={} elapsed_ms={}; correctness completion is not a throughput guarantee", self.name, self.performance_reference.as_secs(), elapsed.as_millis());
+        }
+        assert!(
+            completed && elapsed < CAMPAIGN_LIVENESS_BUDGET,
+            "{} exhausted the {}-second cooperative liveness guard; elapsed={elapsed:?}",
+            self.name,
+            CAMPAIGN_LIVENESS_BUDGET.as_secs()
+        );
+        if let Some(progress) = &*progress {
+            assert_eq!(progress.completed, progress.expected, "incomplete phase");
+        }
+        eprintln!(
+            "{}_OK seeds={} elapsed_ms={} reference_seconds={} liveness_seconds={}",
+            self.name,
+            SEEDS.len(),
+            elapsed.as_millis(),
+            self.performance_reference.as_secs(),
+            CAMPAIGN_LIVENESS_BUDGET.as_secs()
+        );
+    }
+}
 
 struct Grants {
     epochs: [AtomicI64; ACTORS],
@@ -306,11 +416,16 @@ fn audit(records: &[Record]) {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn seeded_concurrent_delivery_pressure_is_bounded_and_signed() {
-    tokio::time::timeout(Duration::from_secs(45), async {
+    let campaign = Arc::new(Campaign::new("DELIVERY_PRESSURE", Duration::from_secs(45)));
+    let result = tokio::time::timeout(CAMPAIGN_LIVENESS_BUDGET, async {
         for seed in SEEDS {
+            let seed_started = Instant::now();
+            campaign.phase(seed, "setup", ACTORS + 1);
             let fixture = Fixture::new(PRESSURE_CAPACITY);
+            campaign.completed();
             fixture.callback.failures.store(true, Ordering::SeqCst);
-            for actor in 0..ACTORS { fixture.subscribe(actor, 1, NOW).await; }
+            for actor in 0..ACTORS { fixture.subscribe(actor, 1, NOW).await; campaign.completed(); }
+            campaign.phase(seed, "actor-steps", ACTORS * PRESSURE_STEPS);
             let barrier = Arc::new(Barrier::new(ACTORS));
             let actions = Arc::new(AtomicUsize::new(0));
             let mut tasks = Vec::new();
@@ -319,12 +434,13 @@ async fn seeded_concurrent_delivery_pressure_is_bounded_and_signed() {
                 let grants = fixture.grants.clone();
                 let barrier = barrier.clone();
                 let actions = actions.clone();
+                let campaign = campaign.clone();
                 tasks.push(tokio::spawn(async move {
                     let mut rng = seed ^ ((actor as u64 + 1) * 0x9e37_79b9);
                     let mut epoch = 1;
                     let mut key = 1;
                     barrier.wait().await;
-                    for step in 0..512 {
+                    for step in 0..PRESSURE_STEPS {
                         match random(&mut rng) % 12 {
                             0..=5 => {
                                 let id = format!("seed_{seed}_actor_{actor}_event_{step}");
@@ -351,14 +467,18 @@ async fn seeded_concurrent_delivery_pressure_is_bounded_and_signed() {
                         }
                         actions.fetch_add(1, Ordering::SeqCst);
                         assert!(events.health()["queue_depth"].as_u64().unwrap() <= PRESSURE_CAPACITY as u64);
+                        campaign.completed();
                         tokio::task::yield_now().await;
                     }
                 }));
             }
             for task in tasks { task.await.unwrap(); }
+            campaign.phase(seed, "retry-drain", 10);
             for delta in [1000, 4000, 9000, 18000, 35000, 70000, 135000, 200000, 270000, BUFFER_MS] {
                 fixture.events.tick(NOW + delta).await;
+                campaign.completed();
             }
+            campaign.phase(seed, "audit", 1);
             assert_eq!(fixture.events.health()["queue_depth"], 0);
             assert_eq!(fixture.events.health()["storage_faults"], 0);
             assert_eq!(fixture.events.health()["historical_replay"], false);
@@ -366,23 +486,34 @@ async fn seeded_concurrent_delivery_pressure_is_bounded_and_signed() {
             let records = fixture.callback.records();
             assert!(!records.is_empty());
             audit(&records);
-            assert!(actions.load(Ordering::SeqCst) >= ACTORS * 512);
-            eprintln!("DELIVERY_PRESSURE seed={seed} actions={} callback_attempts={} denied_before_bytes={} health={}",
-                actions.load(Ordering::SeqCst), records.len(), fixture.callback.denied.load(Ordering::SeqCst), fixture.events.health());
+            assert!(actions.load(Ordering::SeqCst) >= ACTORS * PRESSURE_STEPS);
+            campaign.completed();
+            eprintln!("DELIVERY_PRESSURE seed={seed} actions={} callback_attempts={} denied_before_bytes={} health={} seed_elapsed_ms={}",
+                actions.load(Ordering::SeqCst), records.len(), fixture.callback.denied.load(Ordering::SeqCst), fixture.events.health(), seed_started.elapsed().as_millis());
+            campaign.phase(seed, "cleanup", 1);
+            drop(fixture);
+            campaign.completed();
         }
-    }).await.expect("bounded pressure campaign exceeded 45 seconds");
+    }).await;
+    campaign.finish(result.is_ok());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn gated_generation_races_never_send_revoked_or_recreated_deliveries() {
-    tokio::time::timeout(Duration::from_secs(30), async {
+    let campaign = Campaign::new("DELIVERY_RACES", Duration::from_secs(30));
+    let result = tokio::time::timeout(CAMPAIGN_LIVENESS_BUDGET, async {
         for seed in SEEDS {
+            let seed_started = Instant::now();
+            campaign.phase(seed, "setup", 2);
             let fixture = Fixture::new(64);
+            campaign.completed();
             let mut rng = seed;
             let mut epoch = 1;
             fixture.subscribe(0, 1, NOW).await;
-            for step in 0..96 {
-                let now = NOW + step * 4000;
+            campaign.completed();
+            campaign.phase(seed, "gated-races", RACE_ROUNDS);
+            for step in 0..RACE_ROUNDS {
+                let now = NOW + step as u64 * 4000;
                 fixture.subscribe(0, 1, now).await;
                 let id = format!("race_{seed}_{step}");
                 let gate = fixture.callback.gate(id.clone());
@@ -397,7 +528,7 @@ async fn gated_generation_races_never_send_revoked_or_recreated_deliveries() {
                 gate.entered.notified().await;
                 // Concurrent pumps must not dequeue another copy of the event.
                 let mut contenders = Vec::new();
-                for _ in 0..8 {
+                for _ in 0..COMPETING_TICKS {
                     let e = fixture.events.clone();
                     contenders.push(tokio::spawn(async move { e.tick(now).await }));
                 }
@@ -443,17 +574,23 @@ async fn gated_generation_races_never_send_revoked_or_recreated_deliveries() {
                     );
                 }
                 fixture.grants.current.store(true, Ordering::SeqCst);
+                campaign.completed();
             }
+            campaign.phase(seed, "audit", 1);
             assert_eq!(fixture.callback.maximum_active.load(Ordering::SeqCst), 1);
             audit(&fixture.callback.records());
+            campaign.completed();
             eprintln!(
-                "DELIVERY_RACES seed={seed} gated_races=96 competing_ticks=768 blocked={}",
-                fixture.callback.denied.load(Ordering::SeqCst)
+                "DELIVERY_RACES seed={seed} gated_races={RACE_ROUNDS} competing_ticks={} blocked={} seed_elapsed_ms={}",
+                RACE_ROUNDS * COMPETING_TICKS, fixture.callback.denied.load(Ordering::SeqCst), seed_started.elapsed().as_millis()
             );
+            campaign.phase(seed, "cleanup", 1);
+            drop(fixture);
+            campaign.completed();
         }
     })
-    .await
-    .expect("generation races exceeded 30 seconds");
+    .await;
+    campaign.finish(result.is_ok());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
