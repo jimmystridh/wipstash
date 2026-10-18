@@ -684,10 +684,8 @@ pub(crate) fn validate_recovery(v: &Value) -> R<()> {
         if !id(&t["lineage"]["root"]) {
             return Err("invalid_resolution_root".into());
         }
-        if !t["lineage"]["parent"].is_null() {
-            if !id(&t["lineage"]["parent"]) {
-                return Err("invalid_resolution_parent".into());
-            }
+        if !t["lineage"]["parent"].is_null() && !id(&t["lineage"]["parent"]) {
+            return Err("invalid_resolution_parent".into());
         }
         if t["lineage"]["attempt"] != t["attempt"] {
             return Err("invalid_resolution_lineage".into());
