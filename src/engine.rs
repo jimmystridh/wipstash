@@ -1013,7 +1013,7 @@ fn status(state: &Path, db: &Connection, r: &Value) -> R<Value> {
             action["arguments"]["workspace"] = json!(wid);
             action
         } else if dirty == Some(true) {
-            feedback::action(Some("checkpoint"),"Private changes are not checkpointed. Capture them explicitly before selecting a checkpoint for publication.",json!({"workspace":wid,"expected_generation":w.generation}))
+            feedback::action(None,"Uncheckpointed private WIP is present. Checkpoint it only if explicitly intended; an existing checkpoint can be published without capturing newer WIP. Preserve the caller's exact checkpoint choice.",json!({"workspace":wid}))
         } else if let Some(p) = summaries["proposals"].as_array().and_then(|a| {
             a.iter().find(|p| {
                 matches!(
@@ -1501,6 +1501,68 @@ mod regression_tests {
     }
 
     #[test]
+    fn feedback_dirty_status_preserves_explicit_older_publication_choice() {
+        let p = Project::new();
+        fs::write(p.0.join("A/a"), "safe selected content\n").unwrap();
+        p.request(json!({"op":"checkpoint","workspace":"A","expected_generation":0,"operation_id":"chosen-public-snapshot"}));
+        fs::write(p.0.join("A/private-checkpoint"), "PRIVATE_SNAPSHOT_CANARY").unwrap();
+        let private = p.request(json!({"op":"checkpoint","workspace":"A","expected_generation":1,"operation_id":"newer-private-snapshot"}));
+        fs::write(p.0.join("A/private-live"), "PRIVATE_LIVE_CANARY").unwrap();
+        let db = Connection::open(p.0.join("state/state.sqlite")).unwrap();
+        let before: i64 = db
+            .query_row("SELECT COUNT(*) FROM checkpoints", [], |r| r.get(0))
+            .unwrap();
+        let status = p.request(json!({"op":"status","workspace":"A"}));
+        assert_eq!(status["dirty"], true);
+        assert_eq!(status["checkpoint"], "newer-private-snapshot");
+        assert_eq!(status["next_action"]["op"], Value::Null);
+        assert!(status["next_action"]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("Preserve the caller's exact checkpoint choice"));
+        assert!(status["next_action"]["arguments"]
+            .get("expected_generation")
+            .is_none());
+        assert_eq!(status["generation"], 2);
+        let after: i64 = db
+            .query_row("SELECT COUNT(*) FROM checkpoints", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(before, after);
+        let published = p.request(json!({"op":"publish","workspace":"A","checkpoint":"chosen-public-snapshot","intent":"explicit older safe checkpoint","operation_id":"publish-chosen-snapshot"}));
+        assert_eq!(published["checkpoint"], "chosen-public-snapshot");
+        assert_eq!(
+            p.request(json!({"op":"integrate"}))["outcomes"][0]["state"],
+            "integrated"
+        );
+        let git = coordinator(&p.0.join("state"));
+        let head = git.head(HEAD).unwrap();
+        assert_eq!(
+            git.run(&["show", &format!("{head}:a")], None).unwrap(),
+            b"safe selected content\n"
+        );
+        for path in ["private-checkpoint", "private-live"] {
+            assert!(git.run(&["show", &format!("{head}:{path}")], None).is_err());
+        }
+        assert!(git
+            .run(
+                &["cat-file", "-e", private["commit"].as_str().unwrap()],
+                None
+            )
+            .is_err());
+        assert_eq!(
+            fs::read_to_string(p.0.join("A/private-checkpoint")).unwrap(),
+            "PRIVATE_SNAPSHOT_CANARY"
+        );
+        assert_eq!(
+            fs::read_to_string(p.0.join("A/private-live")).unwrap(),
+            "PRIVATE_LIVE_CANARY"
+        );
+        let status = p.request(json!({"op":"status","workspace":"A"}));
+        assert_eq!(status["generation"], 2);
+        assert_eq!(status["checkpoint"], "newer-private-snapshot");
+    }
+
+    #[test]
     fn feedback_resolution_failure_reports_isolated_generation_and_prioritizes_task() {
         let p = Project::new();
         let opened = fixed_resolution(&p);
@@ -1678,6 +1740,11 @@ mod regression_tests {
         let status = p.request(json!({"op":"status","workspace":"B"}));
         assert_eq!(status["generation"], 1);
         assert_eq!(status["dirty"], Value::Null);
+        assert_eq!(status["next_action"]["op"], "status");
+        assert!(status["next_action"]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("command_recover"));
     }
     #[test]
     fn failed_command_launch_invalidates_generation_and_is_idempotent() {

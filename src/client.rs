@@ -23,7 +23,7 @@ fn output_schema() -> Value {
         "checks_pending":{"type":"boolean","description":"Legacy queue-status flag; does not establish configured or pending checks. Structured validation and configured-check counts are authoritative for actual check evidence."},
         "generation":{"type":"integer","minimum":0},
         "current_generation":{"type":"integer","minimum":0},
-        "checkpoint":{"type":["string","null"],"description":"Selected checkpoint ID; not the Git commit OID."},
+        "checkpoint":{"type":["string","null"],"description":"Operation-bound checkpoint ID, not the Git commit OID. Workspace status reports its stored snapshot, not a publication choice or authorization; preserve the caller's exact selected ID even when newer private WIP exists."},
         "next_action":{"type":"object","description":"Suggested action bound to observed state, never permission to mutate or a promise that it remains current.","properties":{"op":{"type":["string","null"]},"reason":{"type":"string"},"requires_explicit_request":{"const":true},"arguments":{"type":"object"}}},
         "recovery":{"type":"object","description":"Recovery guidance for this recorded outcome. Never automatically replay an uncertain managed command.","properties":{"action":{"type":"string"},"retry_with_new_operation_id":{"type":"boolean"},"reason":{"type":"string"}}},
         "proposals_truncated":{"type":"boolean"},

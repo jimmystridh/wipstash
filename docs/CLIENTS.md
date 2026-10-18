@@ -62,7 +62,8 @@ operations, such as explicit integration and managed commands.
    at its own workspace. Merely registering MCP does not change its directory.
 2. Before checkpoint/adoption, stop every native tool, shell, editor and background
    writer that can change the workspace. MCP cannot intercept these writers.
-3. Use workspace status for `generation` and the selected `checkpoint` ID, or
+3. Use workspace status for `generation` and its stored workspace `checkpoint`
+   ID, not as an instruction to select that checkpoint for publication. You can
    carry forward the generation returned by your last successful mutation when
    no other writer can have changed the workspace. Pass it as
    `expected_generation` where required. A checkpoint ID is not its Git commit
@@ -299,3 +300,12 @@ This minimal directory-data access makes the no-delete-sharing restriction
 participate in Windows sharing checks; attribute-only handles do not provide that
 protection. Inaccessible/listing-denied ancestors fail closed. Wipstash does not
 change ACLs or grant extra directory access to make the operation succeed.
+
+### Dirty WIP and explicit checkpoint selection
+
+A dirty workspace does not require a new checkpoint before publication. Status
+reports the workspace's stored snapshot ID, which can differ from the older
+checkpoint the caller deliberately selected. Dirty-state guidance does not select
+an action or authorize capturing newer WIP. Keep the exact selected checkpoint ID
+in the publish request; checkpoint newer private files only when explicitly
+intended. Resolution tasks and writer-recovery fences retain higher priority.

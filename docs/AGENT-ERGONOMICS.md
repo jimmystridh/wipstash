@@ -8,7 +8,7 @@ validation, native model-agent evidence and product-client acceptance.
 - Explicit snapshot-bound `unchecked`, `pending`, `passed` and `failed`
   validation, separate from current policy counts and integration state. No
   configured checks remains a supported default; it never becomes `passed`.
-- Workspace status combines generation, selected checkpoint identity, resolution
+- Workspace status combines generation, stored workspace checkpoint identity, resolution
   tasks and ten recent proposal summaries with explicit truncation. Structured
   next actions and recovery hints preserve publication/adoption decisions.
 - Durable native client receipts, private permissions and exclusive locking on
@@ -151,3 +151,22 @@ minimal directory-list access in both and adds native leaf/ancestor rename/remov
 regressions without weakening existing assertions, DACLs or reparse checks.
 The [Windows sharing algorithm](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-fsa/8c0e3f4f-0729-49f4-a14d-7f7add593819)
 explains the access-mask distinction; native tests remain the acceptance gate.
+
+At revision `7f8457ff2179447c9d773f46ff8bd1a9dfb0454c`, all three native ergonomics
+jobs passed, including Windows directory-guard regressions and the required-check
+MCP campaign. The other full native gates remain separately tracked in
+[that exact CI run](https://github.com/jimmystridh/wipstash/actions/runs/39150039914).
+
+A final bounded advisory follow-on addresses the fresh campaign's dirty-WIP
+finding: status no longer suggests checkpointing private WIP as a prerequisite to
+publication. It leaves the action unspecified, explains explicit checkpoint choice,
+and clarifies that the workspace's stored snapshot is not a publication selection.
+A regression verifies that a deliberately older public checkpoint still publishes
+without exporting a newer private checkpoint or live canary, and status creates
+no checkpoint or generation change. Mutation, CAS and priority rules are unchanged.
+
+Advisory follow-on local verification passed: 15 feedback, 8 MCP, 22 safe engine,
+30 helper and 15 harness tests; strict formatting/Clippy and the real-stdio
+comparison also passed. Counts overlap. Exact-binary evidence is in the
+[advisory local summary](../evidence/agent-ergonomics/advisory-local-summary.json);
+this later snapshot still requires its own native CI gates.
