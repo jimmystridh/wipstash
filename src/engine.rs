@@ -72,6 +72,11 @@ fn fault(name: &str) {
     }
 }
 fn event(db: &Connection, kind: &str, data: &Value) -> R<()> {
+    let mut data = data.clone();
+    data["_occurred_at"] = json!(std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs());
     sql(db.execute(
         "INSERT INTO events(kind,data) VALUES(?1,?2)",
         params![kind, data.to_string()],

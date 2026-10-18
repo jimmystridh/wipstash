@@ -112,6 +112,8 @@ jobs:
         run: cargo test --locked --manifest-path crates/platform/Cargo.toml
       - name: Read-only inspector contracts
         run: cargo test --locked --manifest-path services/inspector/Cargo.toml
+      - name: Read-only MCP Events and GitHub identity contracts
+        run: cargo test --locked --manifest-path services/mcp-events/Cargo.toml
       - name: Build authenticated transport
         run: cargo build --locked --manifest-path services/transport/Cargo.toml
       - name: Guided pairing contracts
@@ -166,7 +168,7 @@ jobs:
           cargo test --locked --manifest-path services/backup/Cargo.toml git_protocol_defaults_and_github_override_are_separate
       - name: Verify linked SQLite runtime on every platform
         run: |
-          for manifest in Cargo.toml services/storage/Cargo.toml services/backup/Cargo.toml services/transport/Cargo.toml simulations/wan/Cargo.toml services/inspector/Cargo.toml; do
+          for manifest in Cargo.toml services/storage/Cargo.toml services/backup/Cargo.toml services/transport/Cargo.toml simulations/wan/Cargo.toml services/inspector/Cargo.toml services/mcp-events/Cargo.toml; do
             cargo test --locked --manifest-path "$manifest" --test sqlite_runtime -- --nocapture
           done
       - name: Full Linux suites
@@ -202,6 +204,8 @@ jobs:
           cargo clippy --locked --manifest-path crates/repair-runner/Cargo.toml --all-targets -- -D warnings
           cargo fmt --manifest-path services/inspector/Cargo.toml --check
           cargo clippy --locked --manifest-path services/inspector/Cargo.toml --all-targets -- -D warnings
+          cargo fmt --manifest-path services/mcp-events/Cargo.toml --check
+          cargo clippy --locked --manifest-path services/mcp-events/Cargo.toml --all-targets -- -D warnings
   inspector-browser:
     name: Dioxus WASM and browser inspection
     runs-on: ubuntu-latest

@@ -217,3 +217,7 @@ Contributions that close a gate should include a reproducible test and a precise
 ## License
 
 [MIT](LICENSE). Build on it. Keep the notice.
+
+## Optional ChatGPT Work / dot events
+
+See [the optional MCP Events connection](services/mcp-events/README.md) for direct GitHub identity, explicit project grants, identity-bound invitations and best-effort five-minute event delivery. Existing local stdio is unchanged. Real OAuth/domain and ChatGPT acceptance remain separate release gates.
