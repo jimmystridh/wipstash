@@ -85,8 +85,9 @@ choose and publish checkpoints without a mandatory human approval on every call.
    publishes one selected resolved snapshot, not the private checkpoint ancestry.
 6. Track the returned new `proposal` with `wipstash_proposal_status`. Local
    submission queues normal integration; it is not an integration success. The
-   replacement must pass current integration policy. The old local proposal is
-   marked `superseded`. Shared head arrival and resolution submission do not
+   replacement is remerged against the latest shared head and must pass current
+   integration policy. The old local proposal is marked `superseded`.
+   Shared head arrival and resolution submission do not
    update the original workspace; adopt later only when ready.
 
 For JSON CLI users, this is the request sequence (replace every placeholder with
@@ -107,11 +108,32 @@ result is semantically correct.
 ## Stale heads, bounded retries and uncertain outcomes
 
 Submission requires the selected checkpoint to match the live resolution
-checkout and its captured public head. If the head advances, `stale_resolution`
-requires a fresh isolated checkout and fresh operation IDs. Preserve the previous
-resolution for comparison; reapply and review the intended fix against the new
-head rather than blindly resubmitting old bytes. Never substitute a newer head
-OID into an old checkout's request.
+checkout, its current generation and its captured public head. Always copy
+`expected_head` from that checkout's `resolution_open.current_head`; never
+substitute a newer head OID into an old checkout's request.
+
+If public history has advanced compatibly, submission can preserve the explicit
+resolution without reopening. It prepares a sanitized candidate whose sole parent
+remains the captured head, then preflights a three-way merge with the observed
+latest public head. This preserves intervening changes rather than treating the
+old resolved snapshot as a replacement for the new head. The response's
+`head_advanced` and `observed_head` describe that observation; `base` remains the
+captured head and `checks_pending` remains true. Neither the original workspace
+nor the resolution checkout is adopted or rewritten.
+
+If this fresh merge has renewed conflicts, or the request no longer binds the
+captured head, `stale_resolution` requires a fresh isolated checkout and fresh
+operation IDs. No submitted revision is consumed by this rejection. Preserve the
+previous resolution for comparison; reapply and review the intended fix against
+the new head rather than blindly resubmitting old bytes. A changed live checkout,
+selected checkpoint or workspace generation is rejected separately and requires
+a new, deliberate checkpoint before submission.
+
+A successful preflight is only queue admission. Normal integration remerges the
+unchanged public candidate against its then-current head and runs current checks
+before compare-and-swap promotion. Further conflicts or check failures quarantine
+the successor and return its own resolution task with the retained attempt count.
+No background resolution, automatic new publication, or head reservation occurs.
 
 The resolution lineage permits at most three submitted revisions. If the third
 is quarantined, the task becomes `escalated`. Stop automatic attempts, summarize
@@ -138,10 +160,11 @@ public snapshot against its actual latest tip, and applies current checks. A tip
 change during delivery does not itself strand an otherwise valid replacement:
 if the fresh merge or checks fail, the replacement is quarantined and receives
 its own task with the retained lineage/attempt count. Fetch that receipt and
-missing head events, then resolve the successor task. Local submission still
-rejects a head already known to have changed in its cache; reopen a fresh isolated
-checkout in that case. Neither local queue acceptance nor an imported receipt is
-remote integration success. Receipt delivery never adopts workspace files.
+missing head events, then resolve the successor task. If the client's known
+public cache advances, local submission uses the same compatibility preflight;
+renewed conflicts still require a fresh isolated checkout. Neither local queue
+acceptance nor an imported receipt is remote integration success. Receipt delivery
+never adopts workspace files.
 
 This local identity contract is cooperative, not a per-user security boundary.
 Remote transport identity and ACL checks are a separate layer. Do not edit an

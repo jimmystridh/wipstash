@@ -409,11 +409,8 @@ pub(super) fn submit(state: &Path, db: &Connection, r: &Value) -> R<Value> {
     if original != proposal || session_owner != owner || phase != "open" {
         return Err("resolution_owner_mismatch: checkout does not belong to this open task".into());
     }
-    if field(r, "expected_head")? != head
-        || w.base != head
-        || latest_public_head(state, db, &task)? != head
-    {
-        return Err("stale_resolution: authority tip advanced; open a fresh isolated checkout and use new operation IDs".into());
+    if field(r, "expected_head")? != head || w.base != head {
+        return Err("stale_resolution: expected_head must match the isolated checkout's captured public head; never substitute a newer head".into());
     }
     let expected: Vec<String> = serde_json::from_str(&conflicts).map_err(|e| e.to_string())?;
     let resolved: Vec<String> =
@@ -424,13 +421,14 @@ pub(super) fn submit(state: &Path, db: &Connection, r: &Value) -> R<Value> {
     if expected_set != resolved_set || resolved.len() != resolved_set.len() {
         return Err("resolution_attestation_required: resolved_conflicts must name exactly the checkout conflict paths".into());
     }
-    let (tree, cp_commit, base): (String, String, String) = sql(db.query_row(
-        "SELECT tree,commit_oid,base FROM checkpoints WHERE id=?1 AND workspace=?2",
+    let (tree, cp_commit, base, cp_generation): (String, String, String, i64) = sql(db.query_row(
+        "SELECT tree,commit_oid,base,generation FROM checkpoints WHERE id=?1 AND workspace=?2",
         params![cp, wid],
-        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
     ))?;
     let git = local(state, wid);
     if base != head
+        || cp_generation != w.generation
         || w.checkpoint.as_deref() != Some(cp_commit.as_str())
         || git.capture(&w.path)? != tree
         || git.capture(&w.path)? != tree
@@ -488,6 +486,29 @@ pub(super) fn submit(state: &Path, db: &Connection, r: &Value) -> R<Value> {
     ))?;
     let owner_git = local(state, owner);
     let commit = prepared_proposal(&git, &owner_git, id, &tree, &head)?;
+    let observed_head = latest_public_head(state, db, &task)?;
+    if observed_head != head {
+        // Keep the explicit candidate's sole parent at the captured public head.
+        // That identity is both the caller's resolution basis and the merge base;
+        // substituting the latest head would silently overwrite intervening work.
+        let public = coordinator(state);
+        if !public.ancestor(&head, &observed_head)? {
+            return Err("stale_resolution: public head is not a descendant of the checkout's captured head; synchronize and open a fresh isolated checkout".into());
+        }
+        transfer(
+            &public,
+            &git,
+            &observed_head,
+            &format!("refs/wipstash/resolution-preflight/{id}"),
+        )?;
+        if !git.merge(&observed_head, &commit)?.clean {
+            return Err("stale_resolution: the resolved candidate conflicts with newer public changes; preserve it for comparison and open a fresh isolated checkout with new operation IDs".into());
+        }
+        // This is only a compatibility preflight. Do not publish its merged tree,
+        // run checks here, or claim integration. The unchanged candidate is queued
+        // below; normal integration remerges with its then-current head and checks
+        // the resulting tree under current policy before its existing CAS.
+    }
     // Store the sanitized export on the ORIGINAL owner, so routing and ownership
     // survive client sync. Never transfer checkpoint ancestry.
     transfer(
@@ -511,7 +532,7 @@ pub(super) fn submit(state: &Path, db: &Connection, r: &Value) -> R<Value> {
     } else {
         "local_queued"
     };
-    let result = json!({"ok":true,"proposal":id,"resolution_of":proposal,"state":if online {"coordinator_accepted"} else {"queued_offline"},"commit":commit,"base":head,"attempt":attempt,"checks_pending":true,"remote_contact_unverified":!online});
+    let result = json!({"ok":true,"proposal":id,"resolution_of":proposal,"state":if online {"coordinator_accepted"} else {"queued_offline"},"commit":commit,"base":head,"observed_head":observed_head,"head_advanced":observed_head != head,"attempt":attempt,"checks_pending":true,"remote_contact_unverified":!online});
     sql(db.execute_batch("BEGIN IMMEDIATE"))?;
     sql(db.execute("INSERT INTO proposals(id,workspace,checkpoint,commit_oid,base,intent,state) VALUES(?1,?2,?3,?4,?5,?6,?7)",params![id,owner,cp,commit,head,intent,phase]))?;
     sql(db.execute(

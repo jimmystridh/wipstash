@@ -1524,28 +1524,313 @@ mod regression_tests {
         );
         assert_eq!(fs::read_to_string(p.0.join("B/a")).unwrap(), "proposal\n");
     }
-    #[test]
-    fn resolution_stale_tip_is_rejected_without_consuming_attempt() {
-        let p = Project::new();
-        conflicting_task(&p);
-        let opened = open_resolution(&p, "fix");
+    fn fixed_resolution(p: &Project) -> Value {
+        conflicting_task(p);
+        let opened = open_resolution(p, "fix");
         fs::write(p.0.join("fix/a"), "resolved\n").unwrap();
         p.request(json!({"op":"checkpoint","workspace":"fix","expected_generation":0,"operation_id":"fixed-cp"}));
-        fs::write(p.0.join("A/other"), "unrelated\n").unwrap();
-        p.request(json!({"op":"checkpoint","workspace":"A","expected_generation":1,"operation_id":"other-cp"}));
-        p.request(json!({"op":"publish","workspace":"A","checkpoint":"other-cp","intent":"unrelated","operation_id":"other-pub"}));
+        opened
+    }
+    fn resolution_request(opened: &Value, id: &str) -> Value {
+        json!({"op":"resolution_submit","workspace":"B","proposal":"conflict-pub-B","resolution_workspace":"fix","checkpoint":"fixed-cp","expected_head":opened["current_head"],"resolved_conflicts":["a"],"operation_id":id})
+    }
+    fn queue_public_change(p: &Project, name: &str, path: &str, contents: &str) {
+        p.request(json!({"op":"open","workspace":name,"path":p.0.join(name),"operation_id":format!("open-{name}")}));
+        fs::write(p.0.join(name).join(path), contents).unwrap();
+        p.request(json!({"op":"checkpoint","workspace":name,"expected_generation":0,"operation_id":format!("cp-{name}")}));
+        p.request(json!({"op":"publish","workspace":name,"checkpoint":format!("cp-{name}"),"intent":"new public work","operation_id":format!("pub-{name}")}));
+    }
+    fn integrate_one(p: &Project) -> Value {
+        let result = p.request(json!({"op":"integrate","max_proposals":1}));
+        assert_eq!(result["outcomes"].as_array().unwrap().len(), 1);
+        result["outcomes"][0].clone()
+    }
+    fn public_bytes(p: &Project, head: &str, path: &str) -> Vec<u8> {
+        coordinator(&p.0.join("state"))
+            .run(&["show", &format!("{head}:{path}")], None)
+            .unwrap()
+    }
+    #[test]
+    fn resolution_disjoint_head_advance_remerges_without_reopening() {
+        let p = Project::new();
+        let opened = fixed_resolution(&p);
+        queue_public_change(&p, "newer", "other", "unrelated\n");
+        let advanced = integrate_one(&p)["head"].as_str().unwrap().to_owned();
+        let request = resolution_request(&opened, "advanced-submit");
+        let result = p.request(request.clone());
+        assert_eq!(result["head_advanced"], true);
+        assert_eq!(result["observed_head"], advanced);
+        assert_eq!(result["base"], opened["current_head"]);
+        assert_eq!(result["checks_pending"], true);
+        assert_eq!(result["state"], "coordinator_accepted");
+        assert_eq!(result["attempt"], 1);
+        assert_eq!(p.request(request), result);
+        assert_eq!(p.request(json!({"op":"status"}))["head"], advanced);
+        let public = coordinator(&p.0.join("state"));
+        let parents = public
+            .run(
+                &[
+                    "rev-list",
+                    "--parents",
+                    "-n",
+                    "1",
+                    result["commit"].as_str().unwrap(),
+                ],
+                None,
+            )
+            .unwrap();
         assert_eq!(
-            p.request(json!({"op":"integrate"}))["outcomes"][0]["state"],
-            "integrated"
+            String::from_utf8(parents)
+                .unwrap()
+                .split_whitespace()
+                .collect::<Vec<_>>(),
+            vec![
+                result["commit"].as_str().unwrap(),
+                opened["current_head"].as_str().unwrap()
+            ]
         );
-        let result=execute(&p.0.join("state"),json!({"op":"resolution_submit","workspace":"B","proposal":"conflict-pub-B","resolution_workspace":"fix","checkpoint":"fixed-cp","expected_head":opened["current_head"],"resolved_conflicts":["a"],"operation_id":"stale-submit"})).unwrap();
+        assert_eq!(integrate_one(&p)["state"], "integrated");
+        let head = public.head(HEAD).unwrap();
+        assert_eq!(public_bytes(&p, &head, "a"), b"resolved\n");
+        assert_eq!(public_bytes(&p, &head, "other"), b"unrelated\n");
+        assert_eq!(fs::read_to_string(p.0.join("fix/a")).unwrap(), "resolved\n");
+        assert!(!p.0.join("fix/other").exists());
+        assert_eq!(
+            local(&p.0.join("state"), "fix").head(HEAD).unwrap(),
+            opened["current_head"]
+        );
+        assert_eq!(fs::read_to_string(p.0.join("B/a")).unwrap(), "proposal\n");
+    }
+    #[test]
+    fn resolution_overlapping_head_advance_is_rejected_without_consuming_attempt() {
+        let p = Project::new();
+        let opened = fixed_resolution(&p);
+        queue_public_change(&p, "newer", "a", "newer overlapping intent\n");
+        let advanced = integrate_one(&p)["head"].as_str().unwrap().to_owned();
+        let request = resolution_request(&opened, "stale-submit");
+        let result = execute(&p.0.join("state"), request.clone()).unwrap();
         assert_eq!(result["error"]["code"], "stale_resolution");
+        assert_eq!(execute(&p.0.join("state"), request).unwrap(), result);
         let task = p.request(json!({"op":"resolution_tasks","workspace":"B"}))["tasks"][0].clone();
         assert_eq!(task["attempt"], 0);
+        assert_eq!(p.request(json!({"op":"status"}))["head"], advanced);
+        assert_eq!(
+            public_bytes(&p, &advanced, "a"),
+            b"newer overlapping intent\n"
+        );
+        assert_eq!(fs::read_to_string(p.0.join("fix/a")).unwrap(), "resolved\n");
+        assert!(coordinator(&p.0.join("state"))
+            .head("refs/wipstash/proposals/stale-submit")
+            .is_err());
+        assert!(local(&p.0.join("state"), "B")
+            .head("refs/wipstash/exports/stale-submit")
+            .is_err());
         assert_ne!(
             open_resolution(&p, "fresh")["current_head"],
             opened["current_head"]
         );
+    }
+    #[test]
+    fn resolution_multiple_head_moves_before_integration_preserve_every_change() {
+        let p = Project::new();
+        let opened = fixed_resolution(&p);
+        queue_public_change(&p, "first", "first", "first public change\n");
+        let first = integrate_one(&p)["head"].as_str().unwrap().to_owned();
+        queue_public_change(&p, "second", "second", "second public change\n");
+        queue_public_change(&p, "third", "third", "third public change\n");
+        let submitted = p.request(resolution_request(&opened, "moving-submit"));
+        assert_eq!(submitted["observed_head"], first);
+        for _ in 0..3 {
+            assert_eq!(integrate_one(&p)["state"], "integrated");
+        }
+        let public = coordinator(&p.0.join("state"));
+        let head = public.head(HEAD).unwrap();
+        for path in ["first", "second", "third"] {
+            assert_eq!(
+                public_bytes(&p, &head, path),
+                format!("{path} public change\n").as_bytes()
+            );
+        }
+        assert_eq!(public_bytes(&p, &head, "a"), b"resolved\n");
+        assert!(public.ancestor(&first, &head).unwrap());
+    }
+    #[test]
+    fn resolution_overlap_after_preflight_returns_successor_task() {
+        let p = Project::new();
+        let opened = fixed_resolution(&p);
+        queue_public_change(&p, "first", "first", "disjoint\n");
+        integrate_one(&p);
+        queue_public_change(&p, "later", "a", "later overlapping intent\n");
+        let submitted = p.request(resolution_request(&opened, "later-submit"));
+        assert_eq!(submitted["head_advanced"], true);
+        let latest = integrate_one(&p)["head"].as_str().unwrap().to_owned();
+        let outcome = integrate_one(&p);
+        assert_eq!(outcome["state"], "quarantined");
+        assert_eq!(outcome["resolution_task"]["proposal"], "later-submit");
+        assert_eq!(outcome["resolution_task"]["attempt"], 1);
+        assert_eq!(outcome["resolution_task"]["reason"], "merge_conflict");
+        assert_eq!(outcome["resolution_task"]["conflict_paths"], json!(["a"]));
+        assert_eq!(p.request(json!({"op":"status"}))["head"], latest);
+        assert_eq!(
+            public_bytes(&p, &latest, "a"),
+            b"later overlapping intent\n"
+        );
+        assert_eq!(fs::read_to_string(p.0.join("fix/a")).unwrap(), "resolved\n");
+    }
+    #[test]
+    fn resolution_advanced_head_retains_owner_head_checkpoint_and_generation_fences() {
+        let p = Project::new();
+        let opened = fixed_resolution(&p);
+        queue_public_change(&p, "newer", "other", "unrelated\n");
+        let latest = integrate_one(&p)["head"].clone();
+        for (key, value, error) in [
+            ("workspace", json!("A"), "resolution_owner_mismatch"),
+            ("expected_head", latest, "stale_resolution"),
+            ("expected_head", json!("0".repeat(40)), "stale_resolution"),
+            (
+                "resolved_conflicts",
+                json!([]),
+                "resolution_attestation_required",
+            ),
+        ] {
+            let mut request = resolution_request(&opened, &format!("bad-{key}-{}", digest(&value)));
+            request[key] = value;
+            assert_eq!(
+                execute(&p.0.join("state"), request).unwrap()["error"]["code"],
+                error
+            );
+        }
+        let mut foreign = resolution_request(&opened, "foreign-checkpoint");
+        foreign["checkpoint"] = json!("conflict-cp-B");
+        assert_eq!(execute(&p.0.join("state"), foreign).unwrap()["ok"], false);
+        fs::write(p.0.join("fix/a"), "unchecked live change\n").unwrap();
+        assert_eq!(
+            execute(
+                &p.0.join("state"),
+                resolution_request(&opened, "changed-live")
+            )
+            .unwrap()["error"]["code"],
+            "stale_resolution_checkpoint"
+        );
+        fs::write(p.0.join("fix/a"), "resolved\n").unwrap();
+        // Model a completed command/recovery generation advance without launching
+        // a process. Identical bytes and checkpoint identity do not waive fencing.
+        let db = Connection::open(p.0.join("state/state.sqlite")).unwrap();
+        db.execute(
+            "UPDATE workspaces SET generation=generation+1 WHERE id='fix'",
+            [],
+        )
+        .unwrap();
+        assert_eq!(
+            execute(
+                &p.0.join("state"),
+                resolution_request(&opened, "old-generation")
+            )
+            .unwrap()["error"]["code"],
+            "stale_resolution_checkpoint"
+        );
+        p.request(json!({"op":"checkpoint","workspace":"fix","expected_generation":2,"operation_id":"fresh-cp"}));
+        assert_eq!(
+            execute(
+                &p.0.join("state"),
+                resolution_request(&opened, "old-checkpoint")
+            )
+            .unwrap()["error"]["code"],
+            "stale_resolution_checkpoint"
+        );
+        let mut request = resolution_request(&opened, "fresh-generation");
+        request["checkpoint"] = json!("fresh-cp");
+        assert_eq!(p.request(request)["attempt"], 1);
+    }
+    #[test]
+    fn resolution_advanced_candidate_still_fails_closed_under_current_policy() {
+        let p = Project::new();
+        let opened = fixed_resolution(&p);
+        queue_public_change(&p, "newer", "other", "unrelated\n");
+        let latest = integrate_one(&p)["head"].clone();
+        p.request(resolution_request(&opened, "policy-submit"));
+        // Corrupt stored policy is rejected before any command can start. Actual
+        // required-check failure coverage lives in the native CI stress campaign.
+        let db = Connection::open(p.0.join("state/state.sqlite")).unwrap();
+        db.execute(
+            "INSERT OR REPLACE INTO meta VALUES('policy',?1)",
+            [json!({"checks":[{"id":"never-start","argv":[]}]}).to_string()],
+        )
+        .unwrap();
+        let outcome = integrate_one(&p);
+        assert_eq!(outcome["state"], "quarantined");
+        assert_eq!(outcome["resolution_task"]["attempt"], 1);
+        assert_eq!(
+            outcome["resolution_task"]["reason"],
+            "policy_evaluation_failed"
+        );
+        assert_eq!(p.request(json!({"op":"status"}))["head"], latest);
+        p.request(json!({"op":"configure","policy":{},"operation_id":"restore-policy"}));
+        let next = p.request(json!({"op":"resolution_open","workspace":"B","proposal":"policy-submit","resolution_workspace":"next","path":p.0.join("next"),"operation_id":"open-next"}));
+        assert_eq!(next["conflict_paths"], json!([]));
+        p.request(json!({"op":"checkpoint","workspace":"next","expected_generation":0,"operation_id":"next-cp"}));
+        let result = p.request(json!({"op":"resolution_submit","workspace":"B","proposal":"policy-submit","resolution_workspace":"next","checkpoint":"next-cp","expected_head":next["current_head"],"resolved_conflicts":[],"operation_id":"next-submit"}));
+        assert_eq!(result["attempt"], 2);
+        assert_eq!(integrate_one(&p)["state"], "integrated");
+    }
+    #[test]
+    fn resolution_advanced_candidate_never_exports_private_ancestors_or_adopts_wip() {
+        let p = Project::new();
+        let opened = fixed_resolution(&p);
+        fs::write(p.0.join("fix/private-ancestor"), "private ancestor only\n").unwrap();
+        let private = p.request(json!({"op":"checkpoint","workspace":"fix","expected_generation":1,"operation_id":"private-cp"}));
+        let private_git = local(&p.0.join("state"), "fix");
+        let private_blob = String::from_utf8(
+            private_git
+                .run(
+                    &[
+                        "rev-parse",
+                        &format!("{}:private-ancestor", private["commit"].as_str().unwrap()),
+                    ],
+                    None,
+                )
+                .unwrap(),
+        )
+        .unwrap();
+        fs::remove_file(p.0.join("fix/private-ancestor")).unwrap();
+        p.request(json!({"op":"checkpoint","workspace":"fix","expected_generation":2,"operation_id":"selected-cp"}));
+        fs::write(p.0.join("B/private-wip"), "original owner private WIP\n").unwrap();
+        fs::write(p.0.join("B/.env"), "synthetic excluded canary\n").unwrap();
+        let owner_before = local(&p.0.join("state"), "B")
+            .capture(&p.0.join("B"))
+            .unwrap();
+        queue_public_change(&p, "newer", "other", "unrelated\n");
+        integrate_one(&p);
+        let mut request = resolution_request(&opened, "private-safe-submit");
+        request["checkpoint"] = json!("selected-cp");
+        p.request(request);
+        assert_eq!(integrate_one(&p)["state"], "integrated");
+        let public = coordinator(&p.0.join("state"));
+        let head = public.head(HEAD).unwrap();
+        assert_eq!(public_bytes(&p, &head, "a"), b"resolved\n");
+        assert_eq!(public_bytes(&p, &head, "other"), b"unrelated\n");
+        for oid in [private["commit"].as_str().unwrap(), private_blob.trim()] {
+            assert!(public.run(&["cat-file", "-e", oid], None).is_err());
+            assert!(local(&p.0.join("state"), "B")
+                .run(&["cat-file", "-e", oid], None)
+                .is_err());
+        }
+        assert_eq!(
+            local(&p.0.join("state"), "B")
+                .capture(&p.0.join("B"))
+                .unwrap(),
+            owner_before
+        );
+        assert_eq!(
+            fs::read_to_string(p.0.join("B/.env")).unwrap(),
+            "synthetic excluded canary\n"
+        );
+        assert_eq!(
+            fs::read_to_string(p.0.join("B/private-wip")).unwrap(),
+            "original owner private WIP\n"
+        );
+        assert_eq!(fs::read_to_string(p.0.join("fix/a")).unwrap(), "resolved\n");
+        assert!(!p.0.join("fix/other").exists());
     }
 }
 

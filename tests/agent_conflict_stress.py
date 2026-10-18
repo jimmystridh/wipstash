@@ -242,12 +242,26 @@ class ConflictStress(unittest.TestCase):
         for attempt in range(1, 4):
             resolution = self.open_resolution('A', proposal, str(attempt))
             write(resolution[1], 'business.txt', 'still-invalid-' + str(attempt) + '\n')
-            proposal = self.req(**self.submit_request('A', proposal, resolution, 'retry-' + str(attempt)))['proposal']
+            # A compatible head advance must not force a resolution reopen or
+            # waive the required check when the unchanged candidate integrates.
+            progress_path = 'docs/check-progress-' + str(attempt) + '.txt'
+            write(self.paths['B'], progress_path, 'unrelated\n')
+            frozen['B'][progress_path] = manifest(self.paths['B'])[progress_path]
+            progress = self.publish('B')
+            self.req(op='integrate')
+            self.assertEqual('integrated', self.status(progress)['state'])
+            submitted = self.req(**self.submit_request('A', proposal, resolution, 'retry-' + str(attempt)))
+            self.assertTrue(submitted['head_advanced'])
+            self.assertTrue(submitted['checks_pending'])
+            self.assertEqual(resolution[2], submitted['base'])
+            proposal = submitted['proposal']
             before = self.head()
             self.req(op='integrate')
             self.assertEqual(before, self.head(), 'Failed checks must not promote a clean textual merge')
             self.assertEqual('quarantined', self.status(proposal)['state'])
-            self.assertEqual('action_required' if attempt < 3 else 'escalated', self.tasks('A')[0]['state'])
+            task = self.tasks('A')[0]
+            self.assertEqual('action_required' if attempt < 3 else 'escalated', task['state'])
+            self.assertTrue(any(c.get('exit_code') == 7 for c in task['checks']), task)
         self.req(ok=False, op='resolution_open', workspace='A', proposal=proposal,
                  resolution_workspace='over-budget', path=str(self.h.root / 'over-budget'))
         for _ in range(4):

@@ -77,7 +77,7 @@ fn tools() -> Value {
         ),
         (
             "resolution_submit",
-            "Submit a checkpoint from the resolution workspace as a new proposal against expected_head. Publication is explicit; follow the caller’s authorization and client approval settings. Stale heads must be refreshed.",
+            "Submit a checkpoint as a queued proposal with expected_head copied from resolution_open. Compatible newer public changes are remerged; renewed conflicts require a fresh resolution. Integration and checks are still pending. Publication is explicit; follow the caller’s authorization and client approval settings.",
             vec!["workspace", "proposal", "resolution_workspace", "checkpoint", "expected_head", "resolved_conflicts", "operation_id"],
             vec!["workspace", "proposal", "resolution_workspace", "checkpoint", "expected_head", "resolved_conflicts", "operation_id"],
         ),

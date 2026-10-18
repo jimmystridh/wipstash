@@ -132,7 +132,7 @@ Imagine one bot changing an API, one updating its caller, one writing tests, and
 2. The API bot publishes one chosen snapshot. Later edits stay private until separately published.
 3. The worker integrates it. If the caller bot's proposal conflicts, the caller gets an actionable resolution task; the docs change can still land. The caller opens a separate public-snapshot checkout, resolves and checkpoints the selected change, then explicitly submits a replacement proposal. Its original private WIP stays untouched.
 4. The test bot checks for updates and adopts when ready. If adoption conflicts with its private work, the live workspace stays unchanged and an explicit resolution path is available.
-5. Everyone can inspect proposal status and operation records instead of guessing what a timeout meant. Resolution retries are bounded, stale shared tips require a fresh review, and configured checks run again before promotion.
+5. Everyone can inspect proposal status and operation records instead of guessing what a timeout meant. Resolution retries are bounded; compatible shared-tip advances preserve the explicit resolution through a fresh merge, renewed conflicts require fresh review, and configured checks run again before promotion.
 
 Keep publications intentional and scoped to coherent tasks; this is agent guidance, not an enforced size rule. Conflicts are returned to the submitting agent through status/updates and MCP; Wipstash does not start a background model session to fix them. [Conflict handback and safe Codex/Claude workflow →](docs/CONFLICTS.md)
 
