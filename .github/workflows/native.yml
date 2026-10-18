@@ -31,6 +31,8 @@ jobs:
         run: |
           cargo build --locked
           cargo test --locked --no-run
+      - name: Concurrent SQLite reopen and durable writes
+        run: cargo test --locked --test sqlite_concurrency -- --nocapture
       - name: Prepare Linux core benchmark artifact
         if: runner.os == 'Linux'
         run: |
@@ -86,6 +88,7 @@ jobs:
       - name: Four-actor agent conflict stress campaign
         env:
           WIPSTASH_CONFLICT_STRESS_CI: '1'
+          WIPSTASH_SQLITE_DIAGNOSTICS: '1'
         run: |
           seeds="731927"
           if [[ "${{ runner.os }}" == "Linux" ]]; then

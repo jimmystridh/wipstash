@@ -558,7 +558,7 @@ mod tests {
                 .commit(
                     &git.empty_tree().unwrap(),
                     &[root],
-                    "pending public proposal",
+                    "proposal pending",
                 )
                 .unwrap();
             git.set_ref("refs/wipstash/proposals/pending", &proposal, None)

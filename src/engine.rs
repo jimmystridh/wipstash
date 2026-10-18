@@ -12,8 +12,26 @@ use std::{
 };
 type R<T> = Result<T, String>;
 const HEAD: &str = "refs/wipstash/integration";
+#[track_caller]
 fn sql<T>(v: rusqlite::Result<T>) -> R<T> {
-    v.map_err(|e| format!("storage_error: {e}"))
+    let caller = std::panic::Location::caller();
+    v.map_err(|e| match &e {
+        rusqlite::Error::SqliteFailure(code, _) => format!(
+            "storage_error: {e}; sqlite_code={:?}; extended_code={}; site={}:{}",
+            code.code, code.extended_code, caller.file(), caller.line()
+        ),
+        _ => format!("storage_error: {e}; site={}:{}", caller.file(), caller.line()),
+    })
+}
+fn sqlite_diagnostics_requested(value: Option<&str>) -> bool {
+    value == Some("1")
+}
+fn sqlite_phase(started: std::time::Instant, phase: &str) {
+    if sqlite_diagnostics_requested(std::env::var("WIPSTASH_SQLITE_DIAGNOSTICS").ok().as_deref()) {
+        // Fixed phase labels only: no SQL, request payloads, or user paths.
+        eprintln!("wipstash_sqlite_phase pid={} phase={} elapsed_ms={}",
+            std::process::id(), phase, started.elapsed().as_millis());
+    }
 }
 fn io<T>(v: std::io::Result<T>) -> R<T> {
     v.map_err(|e| format!("io_error: {e}"))
@@ -284,6 +302,8 @@ fn finalize_adoption(db: &Connection, id: &str) -> R<Value> {
     Ok(result)
 }
 pub fn execute(state: &Path, r: Value) -> R<Value> {
+    let diagnostic_start = std::time::Instant::now();
+    sqlite_phase(diagnostic_start, "entered");
     if r["op"] == "sync_binding_status" {
         return sync::binding_status(state);
     }
@@ -302,10 +322,14 @@ pub fn execute(state: &Path, r: Value) -> R<Value> {
         .read(true)
         .write(true)
         .open(state.join("state.lock")))?;
+    sqlite_phase(diagnostic_start, "state_lock_waiting");
     fs2::FileExt::lock_exclusive(&lock).map_err(|e| e.to_string())?;
+    sqlite_phase(diagnostic_start, "state_lock_acquired");
     let db = sql(Connection::open(state.join("state.sqlite")))?;
+    sqlite_phase(diagnostic_start, "sqlite_opened");
     sql(db.busy_timeout(std::time::Duration::from_secs(30)))?;
     init_db(&db)?;
+    sqlite_phase(diagnostic_start, "sqlite_initialized");
     let op = field(&r, "op")?;
     if op == "recovery_status" {
         return crate::restore::recovery_status(&db);
@@ -339,6 +363,7 @@ pub fn execute(state: &Path, r: Value) -> R<Value> {
     }
     recover(state, &db, matches!(op, "checkpoint" | "command_run"))?;
     sync::recover_head(state, &db)?;
+    sqlite_phase(diagnostic_start, "recovery_complete");
     if sync::is_client(&db)?
         && matches!(
             op,
@@ -428,6 +453,7 @@ pub fn execute(state: &Path, r: Value) -> R<Value> {
     } else {
         Ok(())
     };
+    sqlite_phase(diagnostic_start, "dispatch");
     let result = fenced.and_then(|()| match op {
         "sync_export" | "sync_reexport" => sync::export(state, &db, &r),
         "sync_export_history" => sync::export_history(&db, &r),
@@ -514,6 +540,7 @@ pub fn execute(state: &Path, r: Value) -> R<Value> {
         "backup_flush" => crate::backup::flush(state, &db, Path::new(field(&r, "destination")?)),
         _ => Err("unsupported_operation".into()),
     });
+    sqlite_phase(diagnostic_start, "dispatch_complete");
     match (id, result) {
         (Some(id), Ok(value)) => {
             finish(&db, id, &value)?;
@@ -1503,5 +1530,26 @@ mod regression_tests {
             open_resolution(&p, "fresh")["current_head"],
             opened["current_head"]
         );
+    }
+}
+
+#[cfg(test)]
+mod sqlite_diagnostic_tests {
+    use super::*;
+    #[test]
+    fn extended_io_error_preserves_primary_code_and_callsite() {
+        let code = rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_IOERR_SHMSIZE);
+        let error = sql::<()>(Err(rusqlite::Error::SqliteFailure(code, Some("disk I/O error".into())))).unwrap_err();
+        assert!(error.starts_with("storage_error: disk I/O error; sqlite_code="), "{error}");
+        assert!(error.contains("extended_code=4874"), "{error}");
+        assert!(error.contains("engine.rs:"), "{error}");
+        assert_eq!(error.split(':').next(), Some("storage_error"));
+    }
+    #[test]
+    fn phase_tracing_requires_explicit_opt_in() {
+        for value in [None, Some(""), Some("0"), Some("true")] {
+            assert!(!sqlite_diagnostics_requested(value));
+        }
+        assert!(sqlite_diagnostics_requested(Some("1")));
     }
 }
