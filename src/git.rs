@@ -340,9 +340,10 @@ fn sync_directory(path: &Path) -> Result<()> {
 
 impl Git {
     pub fn init(path: &Path) -> Result<Self> {
+        let argument = wipstash_platform::git_path::argument(path).map_err(err)?;
         fs::create_dir_all(path).map_err(err)?;
         let mut c = command();
-        c.args(["init", "--bare", "--template="]).arg(path);
+        c.args(["init", "--bare", "--template="]).arg(argument);
         checked(execute(c, None)?)?;
         Ok(Self {
             repo: fs::canonicalize(path).map_err(err)?,
@@ -353,13 +354,15 @@ impl Git {
             repo: path.to_path_buf(),
         }
     }
-    fn cmd(&self, args: &[&str]) -> Command {
+    fn cmd(&self, args: &[&str]) -> Result<Command> {
         let mut c = command();
-        c.arg("--git-dir").arg(&self.repo).args(args);
-        c
+        c.arg("--git-dir")
+            .arg(wipstash_platform::git_path::argument(&self.repo).map_err(err)?)
+            .args(args);
+        Ok(c)
     }
     pub fn run(&self, args: &[&str], input: Option<&[u8]>) -> Result<Vec<u8>> {
-        checked(execute(self.cmd(args), input)?)
+        checked(execute(self.cmd(args)?, input)?)
     }
     fn object_size(&self, object: &str) -> Result<u64> {
         valid_oid(object)?;
@@ -434,7 +437,7 @@ impl Git {
     pub fn ancestor(&self, old: &str, new: &str) -> Result<bool> {
         valid_oid(old)?;
         valid_oid(new)?;
-        let output = execute(self.cmd(&["merge-base", "--is-ancestor", old, new]), None)?;
+        let output = execute(self.cmd(&["merge-base", "--is-ancestor", old, new])?, None)?;
         match output.status.code() {
             Some(0) => Ok(true),
             Some(1) => Ok(false),
@@ -485,8 +488,11 @@ impl Git {
             .map_err(err)?;
         let _guard = IndexGuard(index.clone());
         let indexed = |args: &[&str], input: Option<&[u8]>| -> Result<Vec<u8>> {
-            let mut c = self.cmd(args);
-            c.env("GIT_INDEX_FILE", &index);
+            let mut c = self.cmd(args)?;
+            c.env(
+                "GIT_INDEX_FILE",
+                wipstash_platform::git_path::argument(&index).map_err(err)?,
+            );
             checked(execute(c, input)?)
         };
         indexed(&["read-tree", "--empty"], None)?;
@@ -564,15 +570,17 @@ impl Git {
         // Explicit work-tree, current directory and excludesFile isolate this from the
         // caller's checkout and global ignore configuration. Git implements nested
         // rules, negation, escaping, and directory-only patterns itself.
-        let mut c = self.cmd(&[]);
-        c.arg("--work-tree").arg(root).args([
-            "-c",
-            "core.bare=false",
-            "check-ignore",
-            "--no-index",
-            "-q",
-            "--",
-        ]);
+        let mut c = self.cmd(&[])?;
+        c.arg("--work-tree")
+            .arg(wipstash_platform::git_path::argument(root).map_err(err)?)
+            .args([
+                "-c",
+                "core.bare=false",
+                "check-ignore",
+                "--no-index",
+                "-q",
+                "--",
+            ]);
         let mut name = path.as_os_str().to_os_string();
         if is_dir {
             name.push("/");
@@ -703,7 +711,7 @@ impl Git {
         valid_oid(left)?;
         valid_oid(right)?;
         let output = execute(
-            self.cmd(&["merge-tree", "--write-tree", "-z", left, right]),
+            self.cmd(&["merge-tree", "--write-tree", "-z", left, right])?,
             None,
         )?;
         let clean = match output.status.code() {

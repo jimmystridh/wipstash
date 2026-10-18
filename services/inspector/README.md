@@ -15,7 +15,7 @@ cargo run --manifest-path services/inspector/Cargo.toml -- \
 
 `--assets` is optional (without it, only the API is served). The UI uses the same origin. For a separately served development UI, `--allow-origin http://127.0.0.1:8080` permits exactly that local HTTP origin, never wildcard CORS. `--bind` must be an IP socket address on loopback. Browser requests must use the exact configured IP and port in Host. No request path or parameter selects a state directory or arbitrary Git revision.
 
-Do not serve an unreviewed asset directory: JavaScript there has access to all private checkpoint data. Symlinks escaping the configured asset root, traversal, percent-encoded asset paths and unapproved file extensions are refused. Serve a production asset build; the CSP deliberately blocks remote scripts and dev-server WebSockets.
+Do not serve an unreviewed asset directory: JavaScript there has access to all private checkpoint data. Symlinks escaping the configured asset root, traversal, percent-encoded asset paths and unapproved file extensions are refused. The exact `/?demo=1` document URL enables the explicitly labelled synthetic UI demo; other asset queries are rejected. Serve a production asset build; the CSP deliberately blocks remote scripts and dev-server WebSockets.
 
 ## JSON contract (v1)
 
@@ -45,3 +45,5 @@ cargo run --manifest-path services/inspector/Cargo.toml -- \
 ```
 
 The in-memory CLI emits `{status,body,content_type}` and supports `--method`, `--host`, `--origin`, `--fetch-site`, and `--assets` for adversarial tests. It never binds a listener when `--request` is provided. Live-listener validation belongs in an environment where binding is authorized.
+
+On Windows, Git subprocess arguments use the shared conservative local-drive adapter. Ambiguous DOS/device names, UNC/device namespaces and paths of 248 or more UTF-16 units are rejected rather than silently changing path identity. Canonical filesystem containment checks still use the original path. This is a process-argument compatibility boundary, not a replacement for filesystem validation.

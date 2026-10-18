@@ -132,6 +132,8 @@ fn dispatch(
     let Some(root) = assets else {
         return reject("not_found", 404);
     };
+    // The explicit synthetic demo uses the same document; no arbitrary query path is accepted.
+    let target = if target == "/?demo=1" { "/" } else { target };
     if target.contains(['%', '?', '#', '\\'])
         || !target.starts_with('/')
         || target.starts_with("//")
@@ -266,6 +268,55 @@ fn parse(header: &[u8]) -> Option<(&str, &str, HashMap<String, &str>)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn explicit_demo_document_is_served_without_reading_state() {
+        let temp = tempfile::tempdir().unwrap();
+        let assets = temp.path().join("assets");
+        std::fs::create_dir(&assets).unwrap();
+        std::fs::write(
+            assets.join("index.html"),
+            "<!doctype html><title>Inspector</title>",
+        )
+        .unwrap();
+        let assets = assets.canonicalize().unwrap();
+        let inspector = Inspector::new(temp.path(), "127.0.0.1:47831".into(), None).unwrap();
+        for target in ["/", "/?demo=1"] {
+            let (reply, mime) = dispatch(
+                &inspector,
+                Some(&assets),
+                "GET",
+                target,
+                "127.0.0.1:47831",
+                None,
+                None,
+            );
+            assert_eq!(reply.status, 200);
+            assert_eq!(mime, "text/html; charset=utf-8");
+            assert_eq!(reply.body, b"<!doctype html><title>Inspector</title>");
+        }
+        for target in [
+            "/?demo=2",
+            "/?demo=1&path=../",
+            "/index.html?demo=1",
+            "/?demo=1#ignored",
+        ] {
+            assert_eq!(
+                dispatch(
+                    &inspector,
+                    Some(&assets),
+                    "GET",
+                    target,
+                    "127.0.0.1:47831",
+                    None,
+                    None
+                )
+                .0
+                .status,
+                400
+            );
+        }
+        assert!(!temp.path().join("state.sqlite").exists());
+    }
     #[test]
     fn strict_http() {
         assert!(parse(b"GET /api/overview HTTP/1.1\r\nHost: a\r\nhost: b\r\n\r\n").is_none());

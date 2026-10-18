@@ -12,6 +12,10 @@ Wipstash is a Rust prototype with a working local collaboration loop, a JSON CLI
 
 ## Inspect the work
 
+![Wipstash Inspector showing synthetic demo history and a Rust diff](docs/images/inspector.png)
+
+*Actual Dioxus browser capture; synthetic demo data.*
+
 **Wipstash Inspector** is a compact Dioxus web UI for understanding what happened without changing it. Browse private checkpoints, published proposals, quarantined conflicts and shared integrations; select a file to inspect a unified or side-by-side diff.
 
 - Real journal order and explicit comparison bases, rather than invented timestamps

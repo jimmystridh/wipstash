@@ -510,6 +510,8 @@ fn drain(mut r: impl Read, limit: usize) -> std::io::Result<(Vec<u8>, bool)> {
     Ok((out, truncated))
 }
 fn git(repo: &Path, args: &[&str], limit: usize) -> Result<(Vec<u8>, bool)> {
+    let process_path = wipstash_platform::git_path::argument(repo)
+        .map_err(|_| error("unsupported_git_path", 422))?;
     let mut c = Command::new("git");
     for (k, _) in std::env::vars_os() {
         if k.to_string_lossy().starts_with("GIT_") {
@@ -528,7 +530,7 @@ fn git(repo: &Path, args: &[&str], limit: usize) -> Result<(Vec<u8>, bool)> {
         .env("GIT_ATTR_NOSYSTEM", "1")
         .arg("--no-pager")
         .arg("--git-dir")
-        .arg(repo)
+        .arg(process_path)
         .args([
             "-c",
             &format!("core.hooksPath={null}"),

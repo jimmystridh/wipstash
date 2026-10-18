@@ -150,3 +150,12 @@ flushing and is not a supported Windows durable-adoption path; its failures must
 not be ignored or converted to successful flushes. Passing native resumable
 integration establishes functional import/replay, not physical power-loss
 survival of all core Git, export, or adoption paths.
+
+Git process arguments on Windows use a separate, conservative compatibility
+adapter for Rust's canonical verbatim drive paths. Only unambiguous local drive
+paths shorter than 248 UTF-16 code units are converted to conventional drive
+syntax for Git arguments and its index-path environment variable. UNC/device
+namespaces, dot traversal, trailing dots/spaces, reserved DOS names, alternate
+streams and invalid Windows characters are rejected. This does not normalize or
+replace paths used by Rust's filesystem validation, nor extend the namespace
+durability guarantees above. Unix Git arguments remain unchanged.

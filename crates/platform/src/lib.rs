@@ -7,6 +7,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+pub mod git_path;
 pub mod ipc;
 #[cfg(unix)]
 mod unix;
