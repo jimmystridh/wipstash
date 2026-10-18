@@ -1,0 +1,7 @@
+{
+  "sha256": "7688a757fcf87e128c4ddaf05673c670a361d2dd62fba1e83967671fe2034c50",
+  "spec_sha256": "46d01d465de5271b977b7c6c1e8c617564053a660672df991be5b6dcf57cba1f",
+  "cases": 85,
+  "invocations": 170,
+  "checks": 5780
+}

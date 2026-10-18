@@ -1,0 +1,9 @@
+[package]
+name = "sustained-agent-observer"
+version = "0.1.0"
+edition = "2021"
+[dependencies]
+wipstash-mcp-events = { path = "/workspace/shared/wipstash/services/mcp-events" }
+serde_json = "1"
+ring = "0.17"
+[workspace]
