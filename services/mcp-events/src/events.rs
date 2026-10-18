@@ -607,19 +607,22 @@ impl EventService {
         if replaced_generation {
             state.queue.retain(|p| p.subscription != id);
         }
-        if state.verified.len() >= MAX_CACHE {
-            if let Some(key) = state
-                .verified
-                .iter()
-                .min_by_key(|(_, (_, until))| *until)
-                .map(|(key, _)| key.clone())
-            {
-                state.verified.remove(&key);
+        // A cache hit must never extend the original proof lifetime.
+        if !verified {
+            if state.verified.len() >= MAX_CACHE {
+                if let Some(key) = state
+                    .verified
+                    .iter()
+                    .min_by_key(|(_, (_, until))| *until)
+                    .map(|(key, _)| key.clone())
+                {
+                    state.verified.remove(&key);
+                }
             }
+            state
+                .verified
+                .insert(cache, (key_hash, now.saturating_add(VERIFY_CACHE_MS)));
         }
-        state
-            .verified
-            .insert(cache, (key_hash, now.saturating_add(VERIFY_CACHE_MS)));
         Ok(json!({"id":id,"refreshBefore":refresh,"cursor":null,"truncated":false}))
     }
 
@@ -847,6 +850,7 @@ impl EventService {
             let revision = subscription.revision;
             let expiry = subscription.expires;
             let deadline = pending.deadline;
+            let inserted = pending.inserted;
             let check_started = Instant::now();
             let request = CallbackRequest {
                 url: subscription.url,
@@ -859,6 +863,7 @@ impl EventService {
                     let at = current.saturating_add(check_started.elapsed().as_millis() as u64);
                     at < expiry
                         && at < deadline
+                        && inserted.elapsed() < Duration::from_millis(BUFFER_MS)
                         && access.has_project_access(&owner, &event.project)
                         && access.project_grant_epoch(&owner, &event.project) == Some(epoch)
                         && access.event_is_current(&event)
@@ -871,12 +876,10 @@ impl EventService {
                             })
                 }),
             };
-            let remaining = pending.deadline.saturating_sub(current).min(10_000);
-            let response = tokio::time::timeout(
-                Duration::from_millis(remaining),
-                self.transport.post(request),
-            )
-            .await;
+            let remaining =
+                Duration::from_millis(pending.deadline.saturating_sub(current).min(10_000))
+                    .min(Duration::from_millis(BUFFER_MS).saturating_sub(inserted.elapsed()));
+            let response = tokio::time::timeout(remaining, self.transport.post(request)).await;
             let result = match response {
                 Ok(Ok(response)) => Some(response.status),
                 _ => None,
@@ -1313,6 +1316,50 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(transport.verifications(), 4);
+    }
+    #[tokio::test]
+    async fn backward_wall_clock_does_not_extend_monotonic_delivery_budget() {
+        let (events, _, transport, _dir) = service(10);
+        subscribe(&events, request("action_required")).await;
+        events.ingest(transition("clock_step"), NOW);
+        events
+            .state
+            .lock()
+            .unwrap()
+            .queue
+            .front_mut()
+            .unwrap()
+            .inserted = Instant::now() - Duration::from_millis(BUFFER_MS - 100);
+        transport.pause.store(true, Ordering::Relaxed);
+        let worker = events.clone();
+        let tick = tokio::spawn(async move { worker.tick(NOW).await });
+        tokio::time::timeout(Duration::from_secs(1), transport.started.notified())
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        transport.resume.notify_one();
+        tick.await.unwrap();
+        assert!(transport.deliveries().is_empty());
+        assert!(events.state.lock().unwrap().queue.is_empty());
+    }
+    #[tokio::test]
+    async fn cache_hits_do_not_slide_callback_verification_expiry() {
+        let (events, _, transport, _dir) = service(10);
+        for offset in [0, 59_000, 118_000] {
+            events
+                .rpc(
+                    "alice",
+                    "events/subscribe",
+                    request("action_required"),
+                    NOW + offset,
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                transport.verifications(),
+                if offset < VERIFY_CACHE_MS { 1 } else { 2 }
+            );
+        }
     }
     #[tokio::test]
     async fn retries_keep_event_identity_and_body_but_refresh_timestamp_and_signature() {

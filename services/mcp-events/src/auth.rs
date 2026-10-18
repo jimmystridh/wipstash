@@ -862,14 +862,17 @@ impl AuthStore {
             |r| r.get(0),
         )?)
     }
-    /// Retain consumed refresh records until their entire family expires so
-    /// replay detection continues after restarts. Grant versions are never purged.
+    /// Retain consumed code and refresh records until their entire family expires
+    /// so replay detection continues after restarts. Grant versions are never purged.
     pub fn prune_expired(&self, now: i64) -> AuthResult<()> {
         validate_now(now)?;
         let mut conn = self.lock()?;
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         tx.execute("DELETE FROM auth_logins WHERE expires_at<=?1", [now])?;
-        tx.execute("DELETE FROM auth_codes WHERE expires_at<=?1", [now])?;
+        tx.execute(
+            "DELETE FROM auth_codes WHERE expires_at<=?1 AND (used=0 OR NOT EXISTS (SELECT 1 FROM auth_token_families WHERE family_id=auth_codes.family_id AND expires_at>?1))",
+            [now],
+        )?;
         tx.execute("DELETE FROM auth_invitations WHERE expires_at<=?1", [now])?;
         tx.execute("DELETE FROM auth_access_tokens WHERE expires_at<=?1", [now])?;
         tx.execute(
@@ -1470,6 +1473,55 @@ mod tests {
         assert!(store
             .exchange_code(exchange(&expired.code), NOW + CODE_LIFETIME)
             .is_err());
+    }
+    #[test]
+    fn consumed_code_replay_survives_code_expiry_maintenance_and_restart() {
+        let (_root, path) = private_path();
+        let store = AuthStore::open(&path, config()).unwrap();
+        store.grant_project_local(user(7), "alpha", NOW).unwrap();
+        let code = authorize(&store).code;
+        let pair = store.exchange_code(exchange(&code), NOW).unwrap();
+        // Unused expired codes can be deleted; a consumed code must remain a
+        // replay marker for as long as its derived family can authorize access.
+        let unused = authorize(&store).code;
+        let later = NOW + CODE_LIFETIME + 1;
+        store.prune_expired(later).unwrap();
+        drop(store);
+        let reopened = AuthStore::open(&path, config()).unwrap();
+        assert!(reopened.exchange_code(exchange(&unused), later).is_err());
+        let mut wrong = exchange(&code);
+        wrong.code_verifier = "b".repeat(43);
+        assert!(reopened.exchange_code(wrong, later).is_err());
+        assert!(reopened
+            .authenticate_access(&pair.access_token, RESOURCE, later)
+            .is_ok());
+        let refreshed = reopened
+            .rotate_refresh(refresh(&pair.refresh_token), later)
+            .unwrap();
+        assert!(reopened.exchange_code(exchange(&code), later).is_err());
+        assert!(reopened
+            .authenticate_access(&pair.access_token, RESOURCE, later)
+            .is_err());
+        assert!(reopened
+            .authenticate_access(&refreshed.access_token, RESOURCE, later)
+            .is_err());
+        assert!(reopened
+            .rotate_refresh(refresh(&refreshed.refresh_token), later)
+            .is_err());
+        let count_codes = || {
+            reopened
+                .lock()
+                .unwrap()
+                .query_row("SELECT count(*) FROM auth_codes", [], |r| {
+                    r.get::<_, i64>(0)
+                })
+                .unwrap()
+        };
+        assert_eq!(count_codes(), 1);
+        reopened
+            .prune_expired(NOW + REFRESH_FAMILY_LIFETIME)
+            .unwrap();
+        assert_eq!(count_codes(), 0);
     }
     #[test]
     fn access_tokens_are_audience_bound_expiring_and_github_tokens_are_rejected() {
