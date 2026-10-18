@@ -732,18 +732,30 @@ pub(crate) fn validate_recovery(v: &Value) -> R<()> {
                 }
             }
         }
-    // Legacy tasks have no preview metadata. New tasks must supply the complete
-    // triple and truthfully distinguish retained evidence from omitted evidence.
-    if ["conflict_paths_total", "checks_total", "evidence_truncated"].iter().any(|k| t.get(*k).is_some()) {
-        let path_total = t["conflict_paths_total"].as_u64().filter(|n| *n <= 10000).ok_or("invalid_resolution_evidence_count")?;
-        let check_total = t["checks_total"].as_u64().filter(|n| *n <= 1_000_000).ok_or("invalid_resolution_evidence_count")?;
-        let kept_paths = paths.len() as u64;
-        let kept_checks = checks.len() as u64;
-        if path_total < kept_paths || check_total < kept_checks
-            || t["evidence_truncated"].as_bool() != Some(path_total > kept_paths || check_total > kept_checks) {
-            return Err("invalid_resolution_evidence_count".into());
+        // Legacy tasks have no preview metadata. New tasks must supply the complete
+        // triple and truthfully distinguish retained evidence from omitted evidence.
+        if ["conflict_paths_total", "checks_total", "evidence_truncated"]
+            .iter()
+            .any(|k| t.get(*k).is_some())
+        {
+            let path_total = t["conflict_paths_total"]
+                .as_u64()
+                .filter(|n| *n <= 10000)
+                .ok_or("invalid_resolution_evidence_count")?;
+            let check_total = t["checks_total"]
+                .as_u64()
+                .filter(|n| *n <= 1_000_000)
+                .ok_or("invalid_resolution_evidence_count")?;
+            let kept_paths = paths.len() as u64;
+            let kept_checks = checks.len() as u64;
+            if path_total < kept_paths
+                || check_total < kept_checks
+                || t["evidence_truncated"].as_bool()
+                    != Some(path_total > kept_paths || check_total > kept_checks)
+            {
+                return Err("invalid_resolution_evidence_count".into());
+            }
         }
-    }
         if serde_json::to_vec(t).map_err(|e| e.to_string())?.len() > 8192 {
             return Err("resolution_task_too_large".into());
         }
@@ -1889,9 +1901,11 @@ mod tests {
         t["checks_total"] = serde_json::json!(100);
         t["evidence_truncated"] = serde_json::json!(true);
         validate_recovery(&preview).unwrap();
-        preview["observations"][0]["receipt"]["resolution_task"]["evidence_truncated"] = serde_json::json!(false);
+        preview["observations"][0]["receipt"]["resolution_task"]["evidence_truncated"] =
+            serde_json::json!(false);
         assert!(validate_recovery(&preview).is_err());
-        preview["observations"][0]["receipt"]["resolution_task"]["conflict_paths_total"] = serde_json::json!(0);
+        preview["observations"][0]["receipt"]["resolution_task"]["conflict_paths_total"] =
+            serde_json::json!(0);
         assert!(validate_recovery(&preview).is_err());
 
         for field in ["spawn_error", "stdout", "argv", "candidate_tree"] {

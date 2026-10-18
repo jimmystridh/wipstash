@@ -701,7 +701,7 @@ mod tests {
         assert_eq!(
             (b, i, w, c, state),
             (
-                base,
+                base.clone(),
                 intent.into(),
                 "".into(),
                 "".into(),
@@ -841,16 +841,21 @@ mod tests {
         assert_eq!(integrated["outcomes"][0]["state"], "quarantined");
         let task = &integrated["outcomes"][0]["resolution_task"];
         assert_eq!(task["current_head"], base);
-        assert!(task["policy_sha256"].as_str().is_some_and(|s| s.len() == 64));
+        assert!(task["policy_sha256"]
+            .as_str()
+            .is_some_and(|s| s.len() == 64));
         let destination = f.dir.join("restored-resolution-receipt");
         let receipt = crate::engine::execute(&f.state, json!({"op":"sync_export","kind":"receipt","proposal":"pending","operation_id":"fresh-restored-task","destination":destination})).unwrap();
         assert_eq!(receipt["ok"], true);
-        let manifest: Value = serde_json::from_slice(&fs::read(destination.join("manifest.json")).unwrap()).unwrap();
-        assert_eq!(manifest["receipt"]["resolution_task"]["proposal"], "public-source");
+        let manifest: Value =
+            serde_json::from_slice(&fs::read(destination.join("manifest.json")).unwrap()).unwrap();
+        assert_eq!(
+            manifest["receipt"]["resolution_task"]["proposal"],
+            "public-source"
+        );
         assert_eq!(manifest["receipt"]["resolution_task"]["current_head"], base);
         assert_eq!(manifest["receipt"]["resolution_task"]["attempt"], 0);
         assert!(!manifest.to_string().contains("PRIVATE_PATH_CANARY"));
-
     }
     #[test]
     fn repeated_fenced_recovery_preserves_fifo_and_original_disposition() {
@@ -1071,7 +1076,9 @@ mod tests {
     fn preserves_resolution_lineage_without_private_sessions() {
         let f = Fixture::new();
         let db = Connection::open(f.source.join("state.sqlite")).unwrap();
-        let base = Git::open(&f.source.join("coordinator.git")).head("refs/wipstash/integration").unwrap();
+        let base = Git::open(&f.source.join("coordinator.git"))
+            .head("refs/wipstash/integration")
+            .unwrap();
         db.execute("INSERT INTO proposals(id,workspace,checkpoint,commit_oid,base,intent,state) VALUES('pending','PRIVATE_OWNER','PRIVATE_CHECKPOINT',?1,?2,'public retry intent','quarantined')",params![f.proposal,base]).unwrap();
         db.execute_batch("CREATE TABLE IF NOT EXISTS proposal_resolutions(proposal TEXT PRIMARY KEY,parent TEXT NOT NULL,root TEXT NOT NULL,attempt INTEGER NOT NULL)").unwrap();
         db.execute(
@@ -1100,10 +1107,23 @@ mod tests {
         assert!(!details.contains("PRIVATE_OWNER"));
         assert!(!details.contains("PRIVATE_CHECKPOINT"));
         activate(&f.db, &json!({"confirm_old_authority_stopped":true,"confirm_public_recovery_reviewed":true,"sync_binding":null})).unwrap();
-        let state: String = f.db.query_row("SELECT state FROM proposals WHERE id='pending'", [], |r| r.get(0)).unwrap();
+        let state: String =
+            f.db.query_row("SELECT state FROM proposals WHERE id='pending'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
         assert_eq!(state, "coordinator_accepted");
-        let attempt: i64 = f.db.query_row("SELECT attempt FROM proposal_resolutions WHERE proposal='pending'", [], |r| r.get(0)).unwrap();
-        assert_eq!(attempt, 3, "Recovery activation must not refund resolution attempts");
+        let attempt: i64 =
+            f.db.query_row(
+                "SELECT attempt FROM proposal_resolutions WHERE proposal='pending'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            attempt, 3,
+            "Recovery activation must not refund resolution attempts"
+        );
     }
     #[test]
     fn preserves_queue_snapshot_without_enabling_execution() {

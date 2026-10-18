@@ -1193,27 +1193,68 @@ fn wire_task(db: &Connection, observed: &Value, source: &str) -> R<Option<Value>
 /// Evidence is a bounded preview, never the conflict attestation input. Opening a
 /// resolution workspace recomputes the exact merge and full conflict path list.
 fn bound_task_evidence(task: &mut Value) -> R<()> {
-    let path_count = task["conflict_paths"].as_array().ok_or("invalid_resolution_paths")?.len();
-    let check_count = task["checks"].as_array().ok_or("invalid_resolution_checks")?.len();
-    if path_count > 10000 || check_count > 1_000_000 { return Err("invalid_resolution_evidence_count".into()); }
+    let path_count = task["conflict_paths"]
+        .as_array()
+        .ok_or("invalid_resolution_paths")?
+        .len();
+    let check_count = task["checks"]
+        .as_array()
+        .ok_or("invalid_resolution_checks")?
+        .len();
+    if path_count > 10000 || check_count > 1_000_000 {
+        return Err("invalid_resolution_evidence_count".into());
+    }
     task["conflict_paths_total"] = json!(path_count);
     task["checks_total"] = json!(check_count);
     task["evidence_truncated"] = json!(false);
     // Avoid repeatedly serializing the full 10,000-path diagnostic. Counts retain
     // every omitted entry; a receipt's preview never claims the checkout is clean.
-    task["conflict_paths"].as_array_mut().ok_or("invalid_resolution_paths")?.truncate(64);
-    task["checks"].as_array_mut().ok_or("invalid_resolution_checks")?.truncate(64);
+    task["conflict_paths"]
+        .as_array_mut()
+        .ok_or("invalid_resolution_paths")?
+        .truncate(64);
+    task["checks"]
+        .as_array_mut()
+        .ok_or("invalid_resolution_checks")?
+        .truncate(64);
     loop {
-        if serde_json::to_vec(task).map_err(|e|e.to_string())?.len() <= replication::MAX_ENVELOPE_BYTES / 2 { break; }
-        let paths = task["conflict_paths"].as_array().ok_or("invalid_resolution_paths")?.len();
-        let checks = task["checks"].as_array().ok_or("invalid_resolution_checks")?.len();
-        let key = if paths > 0 && paths >= checks { "conflict_paths" } else { "checks" };
-        if task[key].as_array_mut().ok_or("invalid_resolution_evidence")?.pop().is_none() {
+        if serde_json::to_vec(task).map_err(|e| e.to_string())?.len()
+            <= replication::MAX_ENVELOPE_BYTES / 2
+        {
+            break;
+        }
+        let paths = task["conflict_paths"]
+            .as_array()
+            .ok_or("invalid_resolution_paths")?
+            .len();
+        let checks = task["checks"]
+            .as_array()
+            .ok_or("invalid_resolution_checks")?
+            .len();
+        let key = if paths > 0 && paths >= checks {
+            "conflict_paths"
+        } else {
+            "checks"
+        };
+        if task[key]
+            .as_array_mut()
+            .ok_or("invalid_resolution_evidence")?
+            .pop()
+            .is_none()
+        {
             return Err("resolution_task_too_large".into());
         }
     }
-    let truncated = task["conflict_paths"].as_array().ok_or("invalid_resolution_paths")?.len() < path_count
-        || task["checks"].as_array().ok_or("invalid_resolution_checks")?.len() < check_count;
+    let truncated = task["conflict_paths"]
+        .as_array()
+        .ok_or("invalid_resolution_paths")?
+        .len()
+        < path_count
+        || task["checks"]
+            .as_array()
+            .ok_or("invalid_resolution_checks")?
+            .len()
+            < check_count;
     task["evidence_truncated"] = json!(truncated);
     Ok(())
 }
@@ -1295,13 +1336,25 @@ fn validate_task(t: &Value) -> R<()> {
     }
     // Legacy tasks have no preview metadata. New tasks must supply the complete
     // triple and truthfully distinguish retained evidence from omitted evidence.
-    if ["conflict_paths_total", "checks_total", "evidence_truncated"].iter().any(|k| t.get(*k).is_some()) {
-        let path_total = t["conflict_paths_total"].as_u64().filter(|n| *n <= 10000).ok_or("invalid_resolution_evidence_count")?;
-        let check_total = t["checks_total"].as_u64().filter(|n| *n <= 1_000_000).ok_or("invalid_resolution_evidence_count")?;
+    if ["conflict_paths_total", "checks_total", "evidence_truncated"]
+        .iter()
+        .any(|k| t.get(*k).is_some())
+    {
+        let path_total = t["conflict_paths_total"]
+            .as_u64()
+            .filter(|n| *n <= 10000)
+            .ok_or("invalid_resolution_evidence_count")?;
+        let check_total = t["checks_total"]
+            .as_u64()
+            .filter(|n| *n <= 1_000_000)
+            .ok_or("invalid_resolution_evidence_count")?;
         let kept_paths = paths.len() as u64;
         let kept_checks = checks.len() as u64;
-        if path_total < kept_paths || check_total < kept_checks
-            || t["evidence_truncated"].as_bool() != Some(path_total > kept_paths || check_total > kept_checks) {
+        if path_total < kept_paths
+            || check_total < kept_checks
+            || t["evidence_truncated"].as_bool()
+                != Some(path_total > kept_paths || check_total > kept_checks)
+        {
             return Err("invalid_resolution_evidence_count".into());
         }
     }
@@ -1672,7 +1725,9 @@ mod history_tests {
     #[test]
     fn oversized_resolution_evidence_remains_actionable_and_explicit() {
         let mut task = task_fixture();
-        task["conflict_paths"] = json!((0..10000).map(|n| format!("directory/{n}-{}.rs", "x".repeat(180))).collect::<Vec<_>>());
+        task["conflict_paths"] = json!((0..10000)
+            .map(|n| format!("directory/{n}-{}.rs", "x".repeat(180)))
+            .collect::<Vec<_>>());
         task["checks"] = json!((0..64).map(|_| json!({"id_sha256":"a".repeat(64),"required":true,"success":false,"stdout_prefix_sha256":"b".repeat(64),"stderr_prefix_sha256":"c".repeat(64),"stdout_bytes":u64::MAX,"stderr_bytes":u64::MAX,"output_truncated":true,"output_collection_complete":true,"execution_is_os_sandboxed":false,"checkout_unchanged":true,"timed_out":false,"exit_code":1})).collect::<Vec<_>>());
         bound_task_evidence(&mut task).unwrap();
         validate_task(&task).unwrap();
@@ -1684,11 +1739,17 @@ mod history_tests {
         assert_eq!(task["proposal_commit"], "b".repeat(40));
         assert_eq!(task["current_head"], "c".repeat(40));
         assert!(task["conflict_paths"].as_array().unwrap().len() < 10000);
-        let mut dishonest = task.clone(); dishonest["evidence_truncated"] = json!(false);
+        let mut dishonest = task.clone();
+        dishonest["evidence_truncated"] = json!(false);
         assert!(validate_task(&dishonest).is_err());
-        dishonest = task.clone(); dishonest["checks_total"] = json!(1_000_001);
+        dishonest = task.clone();
+        dishonest["checks_total"] = json!(1_000_001);
         assert!(validate_task(&dishonest).is_err());
-        dishonest = task; dishonest.as_object_mut().unwrap().remove("conflict_paths_total");
+        dishonest = task;
+        dishonest
+            .as_object_mut()
+            .unwrap()
+            .remove("conflict_paths_total");
         assert!(validate_task(&dishonest).is_err());
         let mut small = task_fixture();
         bound_task_evidence(&mut small).unwrap();
@@ -1697,12 +1758,14 @@ mod history_tests {
         assert_eq!(small["checks_total"], 0);
         assert_eq!(small["evidence_truncated"], false);
         let mut many_checks = task_fixture();
-        many_checks["checks"] = json!((0..128).map(|_| json!({"id_sha256":"d".repeat(64),"success":false})).collect::<Vec<_>>());
+        many_checks["checks"] = json!((0..128)
+            .map(|_| json!({"id_sha256":"d".repeat(64),"success":false}))
+            .collect::<Vec<_>>());
         bound_task_evidence(&mut many_checks).unwrap();
         validate_task(&many_checks).unwrap();
-        assert_eq!(many_checks["checks_total"],128);
-        assert_eq!(many_checks["evidence_truncated"],true);
-        assert!(many_checks["checks"].as_array().unwrap().len()<=64);
+        assert_eq!(many_checks["checks_total"], 128);
+        assert_eq!(many_checks["evidence_truncated"], true);
+        assert!(many_checks["checks"].as_array().unwrap().len() <= 64);
     }
 
     #[test]

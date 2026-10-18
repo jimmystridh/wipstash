@@ -294,7 +294,14 @@ pub(super) fn open(state: &Path, db: &Connection, r: &Value) -> R<Value> {
 // Commit timestamps are not deterministic. Pin the exact public identity before
 // any transfer, and reuse it after a crash rather than force-updating export refs.
 fn pinned_export(git: &Git, reference: &str) -> R<Option<String>> {
-    let bytes = git.run(&["for-each-ref", "--format=%(refname) %(objectname)", reference], None)?;
+    let bytes = git.run(
+        &[
+            "for-each-ref",
+            "--format=%(refname) %(objectname)",
+            reference,
+        ],
+        None,
+    )?;
     let text = String::from_utf8(bytes).map_err(|e| e.to_string())?;
     for line in text.lines() {
         let (name, oid) = line.split_once(' ').ok_or("invalid_export_reference")?;
@@ -307,11 +314,17 @@ fn pinned_export(git: &Git, reference: &str) -> R<Option<String>> {
 fn validate_prepared(git: &Git, commit: &str, id: &str, tree: &str, head: &str) -> R<()> {
     let bytes = git.verified_object("commit", commit)?;
     let text = String::from_utf8(bytes).map_err(|_| "prepared_resolution_mismatch")?;
-    let (headers, message) = text.split_once("\n\n").ok_or("prepared_resolution_mismatch")?;
+    let (headers, message) = text
+        .split_once("\n\n")
+        .ok_or("prepared_resolution_mismatch")?;
     let lines: Vec<_> = headers.lines().collect();
     let canonical_signature = |line: &str, prefix: &str| {
-        let Some(value) = line.strip_prefix(prefix) else { return false; };
-        let Some((seconds, zone)) = value.split_once(' ') else { return false; };
+        let Some(value) = line.strip_prefix(prefix) else {
+            return false;
+        };
+        let Some((seconds, zone)) = value.split_once(' ') else {
+            return false;
+        };
         seconds.parse::<u64>().is_ok()
             && zone.len() == 5
             && matches!(zone.as_bytes()[0], b'+' | b'-')
@@ -325,11 +338,22 @@ fn validate_prepared(git: &Git, commit: &str, id: &str, tree: &str, head: &str) 
     {
         return Err("prepared_resolution_mismatch: invalid prepared commit provenance".into());
     }
-    let parents: Vec<_> = headers.lines().filter_map(|line| line.strip_prefix("parent ")).collect();
-    let trees: Vec<_> = headers.lines().filter_map(|line| line.strip_prefix("tree ")).collect();
-    if parents != vec![head] || trees != vec![tree]
+    let parents: Vec<_> = headers
+        .lines()
+        .filter_map(|line| line.strip_prefix("parent "))
+        .collect();
+    let trees: Vec<_> = headers
+        .lines()
+        .filter_map(|line| line.strip_prefix("tree "))
+        .collect();
+    if parents != vec![head]
+        || trees != vec![tree]
         || message.trim_end_matches('\n') != format!("proposal {id}")
-        || headers.lines().any(|line| !["tree ", "parent ", "author ", "committer "].iter().any(|prefix| line.starts_with(*prefix)))
+        || headers.lines().any(|line| {
+            !["tree ", "parent ", "author ", "committer "]
+                .iter()
+                .any(|prefix| line.starts_with(*prefix))
+        })
     {
         return Err("prepared_resolution_mismatch: pinned export does not bind this checkpoint, authority head, and operation".into());
     }
@@ -514,45 +538,84 @@ pub(super) fn submit(state: &Path, db: &Connection, r: &Value) -> R<Value> {
     Ok(result)
 }
 
-
 #[cfg(test)]
 mod prepared_tests {
     use super::*;
     #[test]
     fn prepared_resolution_reuses_pinned_identity_across_seconds_and_rejects_rebinding() {
-        let root = std::env::temp_dir().join(format!("wipstash-prepared-resolution-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!(
+            "wipstash-prepared-resolution-{}",
+            std::process::id()
+        ));
         fs::create_dir_all(&root).unwrap();
         let git = Git::init(&root.join("resolution.git")).unwrap();
         let owner = Git::init(&root.join("owner.git")).unwrap();
         let tree = git.empty_tree().unwrap();
-        let head = git.commit(&tree, &[], "Wipstash initial public import").unwrap();
+        let head = git
+            .commit(&tree, &[], "Wipstash initial public import")
+            .unwrap();
         let first = prepared_proposal(&git, &owner, "prepared", &tree, &head).unwrap();
         transfer(&git, &owner, &first, "refs/wipstash/exports/prepared").unwrap();
         let original = String::from_utf8(git.verified_object("commit", &first).unwrap()).unwrap();
-        let author = original.lines().find(|line| line.starts_with("author ")).unwrap();
-        let committer = original.lines().find(|line| line.starts_with("committer ")).unwrap();
+        let author = original
+            .lines()
+            .find(|line| line.starts_with("author "))
+            .unwrap();
+        let committer = original
+            .lines()
+            .find(|line| line.starts_with("committer "))
+            .unwrap();
         for malformed in [
             original.replace(&format!("{author}\n"), ""),
             original.replace(author, &format!("{author}\n{author}")),
             original.replace(&format!("{committer}\n"), ""),
             original.replace(committer, &format!("{committer}\n{committer}")),
-            original.replace("author Wipstash <wipstash@localhost>", "author Other <other@example.test>"),
+            original.replace(
+                "author Wipstash <wipstash@localhost>",
+                "author Other <other@example.test>",
+            ),
             original.replace("proposal prepared", "proposal unrelated"),
         ] {
-            let oid = String::from_utf8(git.run(&["hash-object", "--literally", "-w", "-t", "commit", "--stdin"], Some(malformed.as_bytes())).unwrap()).unwrap();
+            let oid = String::from_utf8(
+                git.run(
+                    &[
+                        "hash-object",
+                        "--literally",
+                        "-w",
+                        "-t",
+                        "commit",
+                        "--stdin",
+                    ],
+                    Some(malformed.as_bytes()),
+                )
+                .unwrap(),
+            )
+            .unwrap();
             assert!(validate_prepared(&git, oid.trim(), "prepared", &tree, &head).is_err());
         }
         std::thread::sleep(std::time::Duration::from_millis(1100));
-        assert_eq!(prepared_proposal(&git, &owner, "prepared", &tree, &head).unwrap(), first);
-        let other = git.commit(&tree, &[], "Wipstash initial public import").unwrap();
+        assert_eq!(
+            prepared_proposal(&git, &owner, "prepared", &tree, &head).unwrap(),
+            first
+        );
+        let other = git
+            .commit(&tree, &[], "Wipstash initial public import")
+            .unwrap();
         assert_ne!(other, head);
-        assert!(prepared_proposal(&git, &owner, "prepared", &tree, &other).unwrap_err().starts_with("prepared_resolution_mismatch"));
+        assert!(prepared_proposal(&git, &owner, "prepared", &tree, &other)
+            .unwrap_err()
+            .starts_with("prepared_resolution_mismatch"));
         assert_eq!(owner.head("refs/wipstash/exports/prepared").unwrap(), first);
         // Legacy crash: only the original owner's export was pinned.
-        let legacy = git.commit(&tree, std::slice::from_ref(&head), "proposal legacy").unwrap();
+        let legacy = git
+            .commit(&tree, std::slice::from_ref(&head), "proposal legacy")
+            .unwrap();
         transfer(&git, &owner, &legacy, "refs/wipstash/exports/legacy").unwrap();
         std::thread::sleep(std::time::Duration::from_millis(1100));
-        assert_eq!(prepared_proposal(&git, &owner, "legacy", &tree, &head).unwrap(), legacy);
+        assert_eq!(
+            prepared_proposal(&git, &owner, "legacy", &tree, &head).unwrap(),
+            legacy
+        );
         assert_eq!(git.head("refs/wipstash/exports/legacy").unwrap(), legacy);
         fs::remove_dir_all(root).unwrap();
     }
