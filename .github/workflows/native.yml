@@ -12,7 +12,7 @@ jobs:
     defaults:
       run:
         shell: bash
-    timeout-minutes: 25
+    timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:
@@ -31,6 +31,46 @@ jobs:
         run: |
           cargo build --locked
           cargo test --locked --no-run
+      - name: Prepare Linux core benchmark artifact
+        if: runner.os == 'Linux'
+        run: |
+          mkdir -p evidence/core-binary
+          cp target/debug/wipstash evidence/core-binary/wipstash
+          python - <<'PYMETA'
+          import hashlib
+          import json
+          import os
+          import platform
+          import subprocess
+          from pathlib import Path
+
+          binary = Path('evidence/core-binary/wipstash')
+          digest = hashlib.sha256(binary.read_bytes()).hexdigest()
+          Path('evidence/core-binary/SHA256SUMS').write_text(digest + '  wipstash\n')
+          metadata = {
+              'commit': os.environ['GITHUB_SHA'],
+              'sha256': digest,
+              'bytes': binary.stat().st_size,
+              'runner_os': os.environ['RUNNER_OS'],
+              'architecture': platform.machine(),
+              'libc': list(platform.libc_ver()),
+              'rustc': subprocess.check_output(['rustc', '--version'], text=True).strip(),
+              'cargo': subprocess.check_output(['cargo', '--version'], text=True).strip(),
+              'profile': 'debug',
+          }
+          Path('evidence/core-binary/metadata.json').write_text(json.dumps(metadata, indent=2) + '\n')
+          PYMETA
+      - name: Save Linux core benchmark executable
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: core-binary-Linux-${{ github.sha }}
+          path: |
+            evidence/core-binary/wipstash
+            evidence/core-binary/SHA256SUMS
+            evidence/core-binary/metadata.json
+          if-no-files-found: error
+          retention-days: 7
       - name: Core MCP contracts
         run: |
           cargo test --locked client::tests

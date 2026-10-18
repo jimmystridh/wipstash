@@ -521,7 +521,19 @@ class ConflictStress(unittest.TestCase):
         new_revision = json.loads((latest_parent / 'manifest.json').read_text())['receipt']['revision']
         self.assertGreater(new_revision, old_revision)
         deliver('C', latest_parent)  # Newly issued superseded-parent observation is harmless too.
-        deliver('C', receipts['C'], ok=False)  # Historical revision is now genuinely stale.
+        replay = deliver('C', receipts['C'])  # Exact known artifacts return their cached acknowledgment.
+        self.assertTrue(replay['duplicate'])
+        parent_status = req('C', op='proposal_status', proposal=proposals['C'])
+        self.assertEqual('superseded', parent_status['state'])
+        self.assertEqual(new_revision, parent_status['remote_observation']['revision'])
+        fresh_stale = self.h.root / 'fresh-stale-parent'
+        shutil.copytree(receipts['C'], fresh_stale)
+        stale_manifest = json.loads((fresh_stale / 'manifest.json').read_text())
+        stale_manifest['operation'] = 'fresh-old-parent-observation'
+        (fresh_stale / 'manifest.json').write_text(json.dumps(stale_manifest))
+        stale_result = deliver('C', fresh_stale, ok=False)
+        self.assertIn('stale_receipt', json.dumps(stale_result))
+        self.assertEqual(parent_status, req('C', op='proposal_status', proposal=proposals['C']))
         tasks = req('C', op='resolution_tasks', workspace='C')['tasks']
         self.assertEqual([revised_c], [t['proposal'] for t in tasks])
         self.assertEqual(1, tasks[0]['attempt'])
