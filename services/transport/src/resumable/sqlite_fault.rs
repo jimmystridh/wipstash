@@ -11,9 +11,25 @@ use std::{
 };
 
 thread_local! {
+    static FORCE_RETAIN_JOURNAL: Cell<bool> = const { Cell::new(false) };
     static COUNTDOWN: Cell<Option<usize>> = const { Cell::new(None) };
     static FAILURES: Cell<usize> = const { Cell::new(0) };
     static SYNCS: Cell<usize> = const { Cell::new(0) };
+    static COMMITTED_AT: Cell<Option<usize>> = const { Cell::new(None) };
+    static FAILED_AFTER_COMMIT: Cell<Option<bool>> = const { Cell::new(None) };
+}
+// Conservative test-only capability: keep PERSIST journals open, as Windows
+// does. It affects only this wrapper on this thread, never the default VFS.
+struct RetainJournalGuard(bool);
+impl RetainJournalGuard {
+    fn set(force: bool) -> Self {
+        Self(FORCE_RETAIN_JOURNAL.with(|v| v.replace(force)))
+    }
+}
+impl Drop for RetainJournalGuard {
+    fn drop(&mut self) {
+        FORCE_RETAIN_JOURNAL.with(|v| v.set(self.0));
+    }
 }
 pub(super) struct FaultGuard;
 impl Drop for FaultGuard {
@@ -26,6 +42,8 @@ pub(super) fn fail_sync_after(successful_syncs: usize) -> FaultGuard {
     COUNTDOWN.with(|v| v.set(Some(successful_syncs)));
     FAILURES.with(|v| v.set(0));
     SYNCS.with(|v| v.set(0));
+    COMMITTED_AT.with(|v| v.set(None));
+    FAILED_AFTER_COMMIT.with(|v| v.set(None));
     FaultGuard
 }
 pub(super) fn disarm() {
@@ -36,6 +54,24 @@ fn failures() -> usize {
 }
 fn syncs() -> usize {
     SYNCS.with(Cell::get)
+}
+/// Called only after Transaction::commit returned Ok, before Connection drops.
+/// Keep the fault armed: a retained PERSIST journal may be synced again on close.
+/// In bundled SQLite, pager_unlock retains journals for UNDELETABLE_WHEN_OPEN
+/// (Windows), and sqlite3PagerClose calls pagerSyncHotJournal but always returns
+/// SQLITE_OK. These cleanup syncs must not be mislabeled as commit barriers.
+/// Source: libsqlite3-sys 0.37.0/sqlite3/sqlite3.c: winDeviceCharacteristics
+/// (51802), pager_unlock (60801), pagerSyncHotJournal (62969), and
+/// sqlite3PagerClose (63097-63160); commit finalization propagates errors through
+/// zeroJournalHdr (60324), pager_end_transaction, sqlite3PagerCommitPhaseTwo.
+pub(super) fn commit_succeeded() {
+    COMMITTED_AT.with(|v| v.set(Some(syncs())));
+}
+fn committed_at() -> Option<usize> {
+    COMMITTED_AT.with(Cell::get)
+}
+fn failed_after_commit() -> Option<bool> {
+    FAILED_AFTER_COMMIT.with(Cell::get)
 }
 const NAME: &str = "wipstash-test-sync-fault";
 static REGISTER: Once = Once::new();
@@ -221,6 +257,7 @@ unsafe extern "C" fn sync(f: *mut ffi::sqlite3_file, flags: c_int) -> c_int {
     });
     if fail {
         FAILURES.with(|n| n.set(n.get() + 1));
+        FAILED_AFTER_COMMIT.with(|v| v.set(Some(committed_at().is_some())));
         return ffi::SQLITE_IOERR_FSYNC;
     }
     let real = (*f.cast::<File>()).real;
@@ -274,7 +311,12 @@ unsafe extern "C" fn sector(f: *mut ffi::sqlite3_file) -> c_int {
 }
 unsafe extern "C" fn device(f: *mut ffi::sqlite3_file) -> c_int {
     let real = (*f.cast::<File>()).real;
-    ((*(*real).pMethods).xDeviceCharacteristics.unwrap())(real)
+    let flags = ((*(*real).pMethods).xDeviceCharacteristics.unwrap())(real);
+    if FORCE_RETAIN_JOURNAL.with(Cell::get) {
+        flags | ffi::SQLITE_IOCAP_UNDELETABLE_WHEN_OPEN
+    } else {
+        flags
+    }
 }
 unsafe extern "C" fn shm_map(
     f: *mut ffi::sqlite3_file,
@@ -420,7 +462,7 @@ mod tests {
             "device":"alice","project":"demo","authority":"central","epoch":1,
             "payload_len":payload.len(),"payload_sha256":fingerprint(&payload)}))
         .unwrap();
-        let mut store = Store::open(root.path()).unwrap();
+        let mut store = Store::open(root.path().canonicalize().unwrap()).unwrap();
         let id = store.begin(&binding, &manifest).unwrap().transfer_id;
         store.chunk(&binding, &id, 0, &payload[..19]).unwrap();
         store.fault_vfs = true;
@@ -437,79 +479,128 @@ mod tests {
     }
 
     #[test]
-    fn sqlite_every_chunk_sync_failure_returns_no_ack_and_reopens_atomically() {
-        // Discover actual sync count on this platform rather than assume a Unix
-        // or Windows journal implementation's particular sequence of syncs.
-        let (_root, store, binding, id, payload) = fixture();
-        let guard = fail_sync_after(usize::MAX);
-        store.chunk(&binding, &id, 19, &payload[19..]).unwrap();
-        let count = syncs();
-        drop(guard);
-        assert!(count > 0);
-        for position in 0..count {
-            let (root, store, binding, id, payload) = fixture();
-            let guard = fail_sync_after(position);
-            let result = store.chunk(&binding, &id, 19, &payload[19..]);
-            assert!(
-                result.is_err(),
-                "sync {position} must not acknowledge a chunk"
-            );
-            assert_sync_error(&*result.unwrap_err());
+    fn sqlite_chunk_commit_sync_errors_and_postcommit_cleanup_are_distinct() {
+        for force_retain in [false, true] {
+            let _retain = RetainJournalGuard::set(force_retain);
+            // Discover actual sync count on this platform rather than assume a Unix
+            // or Windows journal implementation's particular sequence of syncs.
+            let (_root, store, binding, id, payload) = fixture();
+            let guard = fail_sync_after(usize::MAX);
+            store.chunk(&binding, &id, 19, &payload[19..]).unwrap();
+            let count = syncs();
+            let commit_count = committed_at().expect("successful commit must be marked");
+            eprintln!("chunk sync phases: force_retain={force_retain} commit={commit_count} close={} total={count}", count - commit_count);
             drop(guard);
-            drop(store);
-            let reopened = Store::open(root.path()).unwrap();
-            let db = reopened.connection().unwrap();
-            let (record, bytes) = Store::read(&db, &binding, &id).unwrap();
-            let offset = record.status.committed_offset;
-            assert!(offset == 19 || offset == payload.len() as u64);
-            assert_eq!(bytes, payload[..offset as usize]);
-            assert_eq!(record.chunks.len(), if offset == 19 { 1 } else { 2 });
-            drop(db);
-            // Retry accepts either rolled-back or wholly committed state.
-            reopened.chunk(&binding, &id, 19, &payload[19..]).unwrap();
-            assert_eq!(reopened.artifact(&binding, &id).unwrap().objects, payload);
+            assert!(commit_count > 0 && commit_count <= count);
+            if cfg!(windows) || force_retain {
+                assert!(
+                    count > commit_count,
+                    "retained PERSIST journal must sync on close"
+                );
+            }
+            for position in 0..count {
+                let (root, store, binding, id, payload) = fixture();
+                let guard = fail_sync_after(position);
+                let result = store.chunk(&binding, &id, 19, &payload[19..]);
+                if position < commit_count {
+                    assert!(
+                        result.is_err(),
+                        "commit sync {position} must not acknowledge a chunk"
+                    );
+                    assert_sync_error(&*result.unwrap_err());
+                    assert_eq!(committed_at(), None);
+                    assert_eq!(failed_after_commit(), Some(false));
+                } else {
+                    // Proven postcommit cleanup failure, not an ignored COMMIT error.
+                    assert_eq!(committed_at(), Some(commit_count));
+                    assert_eq!(failed_after_commit(), Some(true));
+                    assert_eq!(failures(), 1);
+                    assert_eq!(result.unwrap().committed_offset, payload.len() as u64);
+                }
+                drop(guard);
+                drop(store);
+                let reopened = Store::open(root.path().canonicalize().unwrap()).unwrap();
+                let db = reopened.connection().unwrap();
+                let (record, bytes) = Store::read(&db, &binding, &id).unwrap();
+                let offset = record.status.committed_offset;
+                if position < commit_count {
+                    assert!(offset == 19 || offset == payload.len() as u64);
+                } else {
+                    assert_eq!(offset, payload.len() as u64);
+                }
+                assert_eq!(bytes, payload[..offset as usize]);
+                assert_eq!(record.chunks.len(), if offset == 19 { 1 } else { 2 });
+                drop(db);
+                // Retry accepts either rolled-back or wholly committed state.
+                reopened.chunk(&binding, &id, 19, &payload[19..]).unwrap();
+                assert_eq!(reopened.artifact(&binding, &id).unwrap().objects, payload);
+            }
         }
     }
 
     #[test]
-    fn sqlite_every_completion_sync_failure_keeps_result_and_payload_atomic() {
-        let (_root, store, binding, id, payload) = fixture();
-        store.chunk(&binding, &id, 19, &payload[19..]).unwrap();
-        let imported = json!({"ok":true,"proposal":"sync-fault-test"});
-        let guard = fail_sync_after(usize::MAX);
-        store.complete(&binding, &id, imported.clone()).unwrap();
-        let count = syncs();
-        drop(guard);
-        assert!(count > 0);
-        for position in 0..count {
-            let (root, store, binding, id, payload) = fixture();
+    fn sqlite_completion_commit_sync_errors_and_postcommit_cleanup_are_distinct() {
+        for force_retain in [false, true] {
+            let _retain = RetainJournalGuard::set(force_retain);
+            let (_root, store, binding, id, payload) = fixture();
             store.chunk(&binding, &id, 19, &payload[19..]).unwrap();
-            let guard = fail_sync_after(position);
-            let result = store.complete(&binding, &id, imported.clone());
-            assert!(
-                result.is_err(),
-                "sync {position} must not acknowledge completion"
-            );
-            assert_sync_error(&*result.unwrap_err());
+            let imported = json!({"ok":true,"proposal":"sync-fault-test"});
+            let guard = fail_sync_after(usize::MAX);
+            store.complete(&binding, &id, imported.clone()).unwrap();
+            let count = syncs();
+            let commit_count = committed_at().expect("successful commit must be marked");
+            eprintln!("completion sync phases: force_retain={force_retain} commit={commit_count} close={} total={count}", count - commit_count);
             drop(guard);
-            drop(store);
-            let reopened = Store::open(root.path()).unwrap();
-            let db = reopened.connection().unwrap();
-            let (record, bytes) = Store::read(&db, &binding, &id).unwrap();
-            assert_eq!(record.status.committed_offset, payload.len() as u64);
-            match record.status.import_result {
-                None => assert_eq!(bytes, payload),
-                Some(result) => {
-                    assert_eq!(result, imported);
+            assert!(commit_count > 0 && commit_count <= count);
+            if cfg!(windows) || force_retain {
+                assert!(
+                    count > commit_count,
+                    "retained PERSIST journal must sync on close"
+                );
+            }
+            for position in 0..count {
+                let (root, store, binding, id, payload) = fixture();
+                store.chunk(&binding, &id, 19, &payload[19..]).unwrap();
+                let guard = fail_sync_after(position);
+                let result = store.complete(&binding, &id, imported.clone());
+                if position < commit_count {
+                    assert!(
+                        result.is_err(),
+                        "commit sync {position} must not acknowledge completion"
+                    );
+                    assert_sync_error(&*result.unwrap_err());
+                    assert_eq!(committed_at(), None);
+                    assert_eq!(failed_after_commit(), Some(false));
+                } else {
+                    assert_eq!(committed_at(), Some(commit_count));
+                    assert_eq!(failed_after_commit(), Some(true));
+                    assert_eq!(failures(), 1);
+                    assert_eq!(result.unwrap().import_result, Some(imported.clone()));
+                }
+                drop(guard);
+                drop(store);
+                let reopened = Store::open(root.path().canonicalize().unwrap()).unwrap();
+                let db = reopened.connection().unwrap();
+                let (record, bytes) = Store::read(&db, &binding, &id).unwrap();
+                assert_eq!(record.status.committed_offset, payload.len() as u64);
+                if position >= commit_count {
+                    assert_eq!(record.status.import_result, Some(imported.clone()));
                     assert!(bytes.is_empty());
                 }
+                match record.status.import_result {
+                    None => assert_eq!(bytes, payload),
+                    Some(result) => {
+                        assert_eq!(result, imported);
+                        assert!(bytes.is_empty());
+                    }
+                }
+                drop(db);
+                reopened.complete(&binding, &id, imported.clone()).unwrap();
+                assert_eq!(
+                    reopened.status(&binding, &id).unwrap().import_result,
+                    Some(imported.clone())
+                );
             }
-            drop(db);
-            reopened.complete(&binding, &id, imported.clone()).unwrap();
-            assert_eq!(
-                reopened.status(&binding, &id).unwrap().import_result,
-                Some(imported.clone())
-            );
         }
     }
 

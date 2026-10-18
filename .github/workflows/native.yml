@@ -46,9 +46,11 @@ jobs:
           cargo test --locked --manifest-path services/transport/Cargo.toml --test resumable
       - name: Build remote backup component
         run: cargo build --locked --manifest-path services/backup/Cargo.toml
+      - name: Read-only inspector contracts
+        run: cargo test --locked --manifest-path services/inspector/Cargo.toml
       - name: Verify linked SQLite runtime on every platform
         run: |
-          for manifest in Cargo.toml services/storage/Cargo.toml services/backup/Cargo.toml services/transport/Cargo.toml simulations/wan/Cargo.toml; do
+          for manifest in Cargo.toml services/storage/Cargo.toml services/backup/Cargo.toml services/transport/Cargo.toml simulations/wan/Cargo.toml services/inspector/Cargo.toml; do
             cargo test --locked --manifest-path "$manifest" --test sqlite_runtime -- --nocapture
           done
       - name: Full Linux suites
@@ -63,6 +65,10 @@ jobs:
           python tests/adversarial.py
           python tests/gap_closure.py
           python tests/source_sync.py
+          cargo build --locked --manifest-path services/inspector/Cargo.toml
+          python tests/inspector_security.py
+          rustc --edition=2021 --test tests/inspector_diff.rs -o target/inspector-diff-tests
+          target/inspector-diff-tests
       - name: Formatting and strict Clippy
         if: runner.os == 'Linux'
         run: |
@@ -78,3 +84,49 @@ jobs:
           cargo clippy --locked --manifest-path services/storage/Cargo.toml --all-targets -- -D warnings
           cargo fmt --manifest-path crates/repair-runner/Cargo.toml --check
           cargo clippy --locked --manifest-path crates/repair-runner/Cargo.toml --all-targets -- -D warnings
+          cargo fmt --manifest-path services/inspector/Cargo.toml --check
+          cargo clippy --locked --manifest-path services/inspector/Cargo.toml --all-targets -- -D warnings
+  inspector-browser:
+    name: Dioxus WASM and browser inspection
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: '1.99.1'
+          targets: wasm32-unknown-unknown
+          components: rustfmt, clippy
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Build and check real Dioxus UI
+        run: |
+          cargo test --locked --manifest-path apps/inspector/Cargo.toml
+          cargo fmt --manifest-path apps/inspector/Cargo.toml --check
+          cargo clippy --locked --manifest-path apps/inspector/Cargo.toml --all-targets -- -D warnings
+          cargo install wasm-bindgen-cli --version 0.2.129 --locked
+          python apps/inspector/scripts/build.py
+      - name: Generate real four-workspace inspector fixture
+        run: |
+          cargo build --locked
+          cargo build --locked --manifest-path services/inspector/Cargo.toml
+          python tests/inspector_security.py --artifacts evidence/inspector/ci-fixture
+      - name: Exercise browser against read-only API
+        run: |
+          python -m pip install playwright==1.62.0
+          python -m playwright install --with-deps chromium
+          python tests/inspector_browser.py --assets apps/inspector/dist --fixture evidence/inspector/ci-fixture/fixture.json --artifacts evidence/inspector/browser
+      - name: Save browser screenshots and results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: inspector-browser-${{ github.sha }}
+          path: |
+            evidence/inspector/browser/
+            evidence/inspector/ci-fixture/security-results.json
+          if-no-files-found: warn
+          retention-days: 7

@@ -10,6 +10,30 @@ Four bots can work on one project without sharing one working directory, publish
 
 Wipstash is a Rust prototype with a working local collaboration loop, a JSON CLI, stdio MCP, and explicit source exchange between independent client and authority stores. Start with the disposable demo below. The tested operating profile is cooperative Linux; native platform, TLS service, and remote backup work are experimental. [Exact scope and release gates →](docs/SCOPE.md)
 
+## Inspect the work
+
+**Wipstash Inspector** is a compact Dioxus web UI for understanding what happened without changing it. Browse private checkpoints, published proposals, quarantined conflicts and shared integrations; select a file to inspect a unified or side-by-side diff.
+
+- Real journal order and explicit comparison bases, rather than invented timestamps
+- Workspace and loaded-history filters, keyboard navigation, dark/light themes and a responsive layout
+- Lazy, bounded diffs with line numbers and clear binary/truncation notices
+- A separate read-only service: browsing never checkpoints, publishes, integrates, adopts or recovers your state
+
+Build and launch it against an **existing** Wipstash state directory:
+
+```sh
+rustup target add wasm32-unknown-unknown
+cargo install wasm-bindgen-cli --version 0.2.129 --locked
+python3 apps/inspector/scripts/build.py
+cargo run --locked --manifest-path services/inspector/Cargo.toml -- \
+  --state /absolute/path/to/state \
+  --assets apps/inspector/dist
+```
+
+Open **http://127.0.0.1:47831**. This is a local operator tool that can show private checkpoint source. Keep it on your own trusted machine; do not port-forward it or expose it through a remote proxy. It has no remote login or mutation routes.
+
+[Interface and shortcuts](apps/inspector/README.md) · [Read-only API and security boundary](services/inspector/README.md) · [Adversarial inspection tests](tests/INSPECTOR-SECURITY-REVIEW.md)
+
 ## The four decisions that matter
 
 | Step | What happens | Who decides? |

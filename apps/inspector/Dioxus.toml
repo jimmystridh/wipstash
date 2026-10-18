@@ -1,0 +1,9 @@
+[application]
+name = "wipstash-inspector"
+default_platform = "web"
+
+[web.app]
+title = "Wipstash · Inspector"
+
+[web.watcher]
+watch_path = ["src", "assets"]

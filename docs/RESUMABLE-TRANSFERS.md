@@ -113,11 +113,25 @@ Portable in-process tests compile this private backend on Linux as well as
 Windows and cover reopen/lost acknowledgements, subranges, conflicting appends,
 bindings/epochs, completion, schema corruption, aborted transactions and actual
 SQLite SQLITE_FULL rollback. A private, explicitly selected test VFS injects
-SQLITE_IOERR_FSYNC at every observed append/completion sync position, verifies
-that no successful status is returned, and checks atomic old-or-new state and
-idempotent retries after reopen. It leaves the production/default VFS unchanged.
-These are deterministic process-level checks, not
-physical power-loss experiments. The public Unix backend cannot opt into this
+SQLITE_IOERR_FSYNC at every observed append/completion sync position. A marker
+immediately after the mutation transaction's successful commit distinguishes
+commit-critical flushes from connection-close cleanup. Failures before that
+boundary must return an error and reopen as atomic old-or-new state; failures in
+later close cleanup may return success only with the exact committed new state.
+Idempotent retries are checked in both cases. The test VFS leaves the
+production/default VFS unchanged.
+
+On Windows SQLite retains the PERSIST journal handle because its VFS reports
+SQLITE_IOCAP_UNDELETABLE_WHEN_OPEN. After a successful commit has already flushed
+the invalid journal header, sqlite3PagerClose performs an additional journal
+flush. SQLite explicitly treats this close path as always successful; failure
+of that redundant cleanup flush does not mean the earlier transaction commit
+failed. Tests track the actual commit-return boundary rather than assuming a
+fixed flush count. The shim also exercises this retained-handle behavior on
+portable test hosts. These checks do not weaken the requirement that every
+commit-critical flush succeed before an acknowledgement.
+
+These are deterministic process-level checks, not physical power-loss experiments. The public Unix backend cannot opt into this
 portable test implementation.
 
 References: [SQLite atomic commit and persistent journals](https://www.sqlite.org/atomiccommit.html#persistent_rollback_journals),

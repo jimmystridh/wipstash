@@ -306,6 +306,10 @@ impl Store {
         });
         Self::write(&tx, &r, &payload)?;
         tx.commit()?;
+        #[cfg(test)]
+        if self.fault_vfs {
+            sqlite_fault::commit_succeeded();
+        }
         Ok(r.status)
     }
     pub fn artifact(&self, binding: &Binding, id: &str) -> Result<Artifact> {
@@ -344,6 +348,10 @@ impl Store {
         r.status.import_result = Some(import_result);
         Self::write(&tx, &r, &[])?;
         tx.commit()?;
+        #[cfg(test)]
+        if self.fault_vfs {
+            sqlite_fault::commit_succeeded();
+        }
         Ok(r.status)
     }
 }
@@ -358,6 +366,14 @@ fn valid_id(id: &str) -> bool {
 mod tests {
     use super::*;
     use serde_json::json;
+    fn tempdir() -> tempfile::TempDir {
+        // macOS exposes temporary storage through symlink aliases. Resolve only
+        // the test fixture parent; production continues rejecting symlink roots.
+        tempfile::Builder::new()
+            .tempdir_in(std::env::temp_dir().canonicalize().unwrap())
+            .unwrap()
+    }
+
     fn binding() -> Binding {
         Binding {
             certificate: fingerprint(b"certificate"),
@@ -370,7 +386,7 @@ mod tests {
     }
     #[test]
     fn sqlite_restart_lost_ack_subranges_completion_and_binding() {
-        let t = tempfile::tempdir().unwrap();
+        let t = tempdir();
         let b = binding();
         let payload = vec![42; CHUNK_MAX + 33];
         let m = manifest(&payload);
@@ -440,7 +456,7 @@ mod tests {
     }
     #[test]
     fn sqlite_conflicting_appends_serialize() {
-        let t = tempfile::tempdir().unwrap();
+        let t = tempdir();
         let b = binding();
         let s = Store::open(t.path()).unwrap();
         let id = s.begin(&b, &manifest(b"abc")).unwrap().transfer_id;
@@ -470,7 +486,7 @@ mod tests {
     }
     #[test]
     fn sqlite_schema_records_and_copied_unix_fail_closed() {
-        let t = tempfile::tempdir().unwrap();
+        let t = tempdir();
         let b = binding();
         let s = Store::open(t.path()).unwrap();
         let id = s.begin(&b, &manifest(b"abc")).unwrap().transfer_id;
@@ -486,10 +502,10 @@ mod tests {
         db.execute_batch("PRAGMA user_version=2").unwrap();
         assert!(Store::open(t.path()).is_err());
         drop(db);
-        let t = tempfile::tempdir().unwrap();
+        let t = tempdir();
         std::fs::create_dir(t.path().join("resumable")).unwrap();
         assert!(Store::open(t.path()).is_err());
-        let t = tempfile::tempdir().unwrap();
+        let t = tempdir();
         let db = Connection::open(t.path().join(DATABASE)).unwrap();
         db.execute_batch("CREATE TABLE unrelated(x)").unwrap();
         assert!(Store::open(t.path()).is_err());
@@ -507,7 +523,7 @@ mod tests {
     }
     #[test]
     fn sqlite_full_transaction_rolls_back_bytes_and_offset() {
-        let t = tempfile::tempdir().unwrap();
+        let t = tempdir();
         let b = binding();
         let s = Store::open(t.path()).unwrap();
         let payload = vec![42; CHUNK_MAX];
@@ -534,7 +550,7 @@ mod tests {
     }
     #[test]
     fn sqlite_aborted_transaction_does_not_ack_or_discard_prior_bytes() {
-        let t = tempfile::tempdir().unwrap();
+        let t = tempdir();
         let b = binding();
         let s = Store::open(t.path()).unwrap();
         let id = s.begin(&b, &manifest(b"abcdef")).unwrap().transfer_id;
@@ -559,7 +575,7 @@ mod tests {
     }
     #[test]
     fn sqlite_receipt_budget_and_corrupt_payload_fail_closed() {
-        let t = tempfile::tempdir().unwrap();
+        let t = tempdir();
         let b = binding();
         let s = Store::open(t.path()).unwrap();
         let all = vec![42; PAYLOAD_MAX];

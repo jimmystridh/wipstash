@@ -15,3 +15,7 @@
 *.sqlite-wal
 *.key
 *.pem
+
+# Generated Dioxus browser assets and static design previews
+/apps/inspector/dist/
+/apps/inspector/preview.html

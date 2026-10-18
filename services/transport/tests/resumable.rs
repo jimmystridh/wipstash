@@ -6,6 +6,14 @@ use wipstash_transport::{
     resumable::{Binding, Store, CHUNK_MAX},
     PAYLOAD_MAX,
 };
+fn tempdir() -> tempfile::TempDir {
+    // macOS exposes temporary storage through symlink aliases. Resolve only
+    // the test fixture parent; production continues rejecting symlink roots.
+    tempfile::Builder::new()
+        .tempdir_in(std::env::temp_dir().canonicalize().unwrap())
+        .unwrap()
+}
+
 fn binding() -> Binding {
     Binding {
         certificate: fingerprint(b"authenticated certificate"),
@@ -18,7 +26,7 @@ fn manifest(payload: &[u8]) -> Vec<u8> {
 }
 #[test]
 fn restart_lost_ack_replay_and_final_digest() {
-    let t = tempfile::tempdir().unwrap();
+    let t = tempdir();
     let b = binding();
     let payload = vec![42; CHUNK_MAX + 33];
     let m = manifest(&payload);
@@ -74,7 +82,7 @@ fn restart_lost_ack_replay_and_final_digest() {
 }
 #[test]
 fn binding_paths_and_immutable_manifest() {
-    let t = tempfile::tempdir().unwrap();
+    let t = tempdir();
     let store = Store::open(t.path()).unwrap();
     let b = binding();
     let m = manifest(b"abc");
@@ -120,7 +128,7 @@ fn binding_paths_and_immutable_manifest() {
 #[cfg(unix)]
 #[test]
 fn journal_recovery_discards_only_unacknowledged_tail_and_rejects_corruption() {
-    let t = tempfile::tempdir().unwrap();
+    let t = tempdir();
     let b = binding();
     let store = Store::open(t.path()).unwrap();
     let id = store.begin(&b, &manifest(b"abcdef")).unwrap().transfer_id;
@@ -172,7 +180,7 @@ fn engine(state: &std::path::Path, request: serde_json::Value) -> serde_json::Va
 async fn actual_engine_in_memory_adapter_resumes_and_imports_only_at_finish() {
     use std::{collections::HashMap, fs};
     use wipstash_transport::{Acl, Artifact, Config, Limits, Peer, Service};
-    let t = tempfile::tempdir().unwrap();
+    let t = tempdir();
     let root = t.path();
     let source = root.join("source");
     fs::create_dir(&source).unwrap();
@@ -368,7 +376,7 @@ async fn actual_engine_in_memory_adapter_resumes_and_imports_only_at_finish() {
 #[test]
 fn symlinks_and_changed_journal_are_rejected() {
     use std::os::unix::fs::symlink;
-    let t = tempfile::tempdir().unwrap();
+    let t = tempdir();
     let b = binding();
     let real = t.path().join("real");
     std::fs::create_dir(&real).unwrap();
