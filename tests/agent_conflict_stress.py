@@ -246,7 +246,9 @@ class ConflictStress(unittest.TestCase):
             # waive the required check when the unchanged candidate integrates.
             progress_path = 'docs/check-progress-' + str(attempt) + '.txt'
             write(self.paths['B'], progress_path, 'unrelated\n')
-            frozen['B'][progress_path] = manifest(self.paths['B'])[progress_path]
+            # Manifest keys use the host's native path separators.
+            progress_key = str(Path(progress_path))
+            frozen['B'][progress_key] = manifest(self.paths['B'])[progress_key]
             progress = self.publish('B')
             self.req(op='integrate')
             self.assertEqual('integrated', self.status(progress)['state'])
