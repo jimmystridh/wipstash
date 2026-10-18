@@ -22,7 +22,10 @@ fn private_directory(path: &Path, create: bool) -> Result<()> {
     Ok(())
 }
 fn reject_legacy_secret_journals(dir: &Path) -> Result<()> {
-    if ["bootstrap.json","join-intent.json"].iter().any(|name| std::fs::symlink_metadata(dir.join(name)).is_ok()) {
+    if ["bootstrap.json", "join-intent.json"]
+        .iter()
+        .any(|name| std::fs::symlink_metadata(dir.join(name)).is_ok())
+    {
         return Err(error("legacy_secret_profile_requires_manual_review; root-level secret journals were not moved or deleted; review possible source exposure and rotate credentials before migration"));
     }
     Ok(())
@@ -168,7 +171,14 @@ fn binding_matches(config: &Value, p: &Profile) -> bool {
 }
 // Secret profiles and bootstrap invitations must never become checkpoint input.
 fn clean_absolute(path: &Path) -> Result<()> {
-    if !path.is_absolute() || path.components().any(|c| matches!(c, std::path::Component::ParentDir | std::path::Component::CurDir)) {
+    if !path.is_absolute()
+        || path.components().any(|c| {
+            matches!(
+                c,
+                std::path::Component::ParentDir | std::path::Component::CurDir
+            )
+        })
+    {
         return Err(error("absolute_clean_secret_path_required"));
     }
     Ok(())
@@ -179,9 +189,13 @@ fn canonical_secret_path(path: &Path, directory: bool) -> Result<PathBuf> {
         private_directory(path, false)?;
         return Ok(path.canonicalize()?);
     }
-    let parent=path.parent().ok_or_else(|| error("secret_path_parent_required"))?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| error("secret_path_parent_required"))?;
     private_directory(parent, false)?;
-    let name=path.file_name().ok_or_else(|| error("secret_filename_required"))?;
+    let name = path
+        .file_name()
+        .ok_or_else(|| error("secret_filename_required"))?;
     if std::fs::symlink_metadata(path).is_ok() {
         crate::pairing_files::validate_private_file(path)?;
         Ok(path.canonicalize()?)
@@ -191,47 +205,89 @@ fn canonical_secret_path(path: &Path, directory: bool) -> Result<PathBuf> {
 }
 fn comparable_path(path: &Path) -> Result<PathBuf> {
     #[cfg(windows)]
-    { Ok(PathBuf::from(path.to_str().ok_or_else(|| error("unsupported_nonunicode_secret_path"))?.to_lowercase())) }
+    {
+        Ok(PathBuf::from(
+            path.to_str()
+                .ok_or_else(|| error("unsupported_nonunicode_secret_path"))?
+                .to_lowercase(),
+        ))
+    }
     #[cfg(not(windows))]
-    { Ok(path.to_owned()) }
+    {
+        Ok(path.to_owned())
+    }
 }
 fn paths_overlap(a: &Path, b: &Path) -> Result<bool> {
-    let a=comparable_path(a)?; let b=comparable_path(b)?;
+    let a = comparable_path(a)?;
+    let b = comparable_path(b)?;
     Ok(a.starts_with(&b) || b.starts_with(&a))
 }
 fn workspace_roots(status: &Value) -> Result<Vec<PathBuf>> {
-    let roots=status.get("workspace_roots").and_then(Value::as_array).filter(|r| r.len()<=1000).ok_or_else(|| error("binding_probe_workspace_roots_missing_or_invalid"))?;
-    roots.iter().map(|v| {
-        let raw=v.as_str().filter(|s| s.len()<=4096 && !s.contains('\0')).ok_or_else(|| error("binding_probe_workspace_roots_missing_or_invalid"))?;
-        let path=Path::new(raw);
-        clean_absolute(path)?;
-        Ok(path.to_owned())
-    }).collect()
+    let roots = status
+        .get("workspace_roots")
+        .and_then(Value::as_array)
+        .filter(|r| r.len() <= 1000)
+        .ok_or_else(|| error("binding_probe_workspace_roots_missing_or_invalid"))?;
+    roots
+        .iter()
+        .map(|v| {
+            let raw = v
+                .as_str()
+                .filter(|s| s.len() <= 4096 && !s.contains('\0'))
+                .ok_or_else(|| error("binding_probe_workspace_roots_missing_or_invalid"))?;
+            let path = Path::new(raw);
+            clean_absolute(path)?;
+            Ok(path.to_owned())
+        })
+        .collect()
 }
 fn reject_workspace_overlap(path: &Path, directory: bool, status: &Value) -> Result<()> {
-    let candidate=canonical_secret_path(path,directory)?;
+    let candidate = canonical_secret_path(path, directory)?;
     for root in workspace_roots(status)? {
         let root=root.canonicalize().map_err(|_| error("workspace_path_unavailable; restore or explicitly resolve the registered workspace before creating pairing secrets"))?;
-        if paths_overlap(&candidate,&root)? { return Err(error("secret_path_overlaps_workspace; move pairing profiles and invitation files outside all source and managed workspace directories; no files were deleted")); }
+        if paths_overlap(&candidate, &root)? {
+            return Err(error("secret_path_overlaps_workspace; move pairing profiles and invitation files outside all source and managed workspace directories; no files were deleted"));
+        }
     }
     Ok(())
 }
 fn reject_source_overlap(profile: &Path, source: &Path) -> Result<()> {
     clean_absolute(source)?;
-    let profile=canonical_secret_path(profile,true)?;
-    let source=source.canonicalize().map_err(|_| error("source_path_unavailable"))?;
-    if paths_overlap(&profile,&source)? { return Err(error("profile_overlaps_source; choose a private profile directory outside the source tree before importing")); }
+    let profile = canonical_secret_path(profile, true)?;
+    let source = source
+        .canonicalize()
+        .map_err(|_| error("source_path_unavailable"))?;
+    if paths_overlap(&profile, &source)? {
+        return Err(error("profile_overlaps_source; choose a private profile directory outside the source tree before importing"));
+    }
     Ok(())
 }
 fn validate_probe(status: &Value) -> Result<()> {
-    let _=workspace_roots(status)?;
-    if status["ok"] != true || status.get("pending_config").is_none() || status.get("config").is_none() || !status["initialized"].is_boolean() {
+    let _ = workspace_roots(status)?;
+    if status["ok"] != true
+        || status.get("pending_config").is_none()
+        || status.get("config").is_none()
+        || !status["initialized"].is_boolean()
+    {
         return Err(error("invalid_binding_probe"));
     }
     match status["state"].as_str() {
-        Some("unconfigured") if status["config"].is_null() && (status["pending_config"].is_null() || (status["initialized"]==false && status["pending_config"].is_object())) => Ok(()),
-        Some("configured") if status["initialized"]==true && status["config"].is_object() && status["pending_config"].is_null() => Ok(()),
-        _=>Err(error("inconsistent_binding_probe")),
+        Some("unconfigured")
+            if status["config"].is_null()
+                && (status["pending_config"].is_null()
+                    || (status["initialized"] == false
+                        && status["pending_config"].is_object())) =>
+        {
+            Ok(())
+        }
+        Some("configured")
+            if status["initialized"] == true
+                && status["config"].is_object()
+                && status["pending_config"].is_null() =>
+        {
+            Ok(())
+        }
+        _ => Err(error("inconsistent_binding_probe")),
     }
 }
 async fn check_binding(p: &Profile, allow_fresh: bool) -> Result<Value> {
@@ -289,9 +345,11 @@ async fn setup(f: Flags) -> Result<()> {
             }
         }
 
-        let status=check_binding(&p, false).await?;
-        reject_workspace_overlap(&dir,true,&status)?;
-        if let Some(source)=f.0.get("--source") { reject_source_overlap(&dir,Path::new(source))?; }
+        let status = check_binding(&p, false).await?;
+        reject_workspace_overlap(&dir, true, &status)?;
+        if let Some(source) = f.0.get("--source") {
+            reject_source_overlap(&dir, Path::new(source))?;
+        }
         println!("Authority profile already exists. Use status or device invite.");
         return Ok(());
     }
@@ -346,8 +404,10 @@ async fn setup(f: Flags) -> Result<()> {
     let mut status =
         crate::run_engine(&engine, &state, json!({"op":"sync_binding_status"})).await?;
     validate_probe(&status)?;
-    reject_workspace_overlap(&dir,true,&status)?;
-    if let Some(source)=f.0.get("--source") { reject_source_overlap(&dir,Path::new(source))?; }
+    reject_workspace_overlap(&dir, true, &status)?;
+    if let Some(source) = f.0.get("--source") {
+        reject_source_overlap(&dir, Path::new(source))?;
+    }
     if !status["pending_config"].is_null() {
         return Err(error(
             "pending_client_initialization_conflicts_with_authority_setup",
@@ -371,7 +431,7 @@ async fn setup(f: Flags) -> Result<()> {
         crate::run_engine(&engine, &state, json!({"op":"init","source":source})).await?;
         status = crate::run_engine(&engine, &state, json!({"op":"sync_binding_status"})).await?;
         validate_probe(&status)?;
-        reject_workspace_overlap(&dir,true,&status)?;
+        reject_workspace_overlap(&dir, true, &status)?;
     }
     if status["state"] != "unconfigured"
         && !(status["config"]["project"] == project
@@ -392,7 +452,7 @@ async fn setup(f: Flags) -> Result<()> {
         server_key_pem: String,
         server_der: Vec<u8>,
     }
-    private_directory(&dir.join("credentials"),true)?;
+    private_directory(&dir.join("credentials"), true)?;
     let bootstrap_path = dir.join("credentials/bootstrap.json");
     let b: Bootstrap = if bootstrap_path.exists() {
         load(&bootstrap_path)?
@@ -462,7 +522,7 @@ async fn setup(f: Flags) -> Result<()> {
         &json!({"engine":p.engine,"state":p.state,"staging":dir.join("staging"),"project":p.project,"authority":p.authority,"epoch":p.epoch,"device":p.device,"acl":{"managed":dir.join("pairing.sqlite")},"ca":dir.join("ca.pem"),"certificate":dir.join("server.pem"),"key":dir.join("server-key.pem"),"listen":p.scope.sync_address}),
     )?;
     save(&dir.join("profile.json"), &p)?;
-    println!("Authority profile ready. No listeners started. Run remote serve --directory PATH, then remote device invite --directory PATH --device NAME --out PRIVATE_FILE.");
+    println!("Authority profile ready. No listeners started. Run remote serve --directory PATH, then remote device invite --directory PATH --device NAME --out PRIVATE_FILE.wipstash-invite.");
     Ok(())
 }
 
@@ -476,8 +536,8 @@ async fn device_command(command: &str, f: Flags) -> Result<()> {
     }
     let status = check_binding(&p, false).await?;
     if command == "invite" || command == "rotate" {
-        reject_workspace_overlap(&dir,true,&status)?;
-        reject_workspace_overlap(Path::new(f.get("--out")?),false,&status)?;
+        reject_workspace_overlap(&dir, true, &status)?;
+        reject_workspace_overlap(Path::new(f.get("--out")?), false, &status)?;
     }
     let store = if command == "list" {
         PairingStore::open_existing(dir.join("pairing.sqlite"))?
@@ -504,6 +564,13 @@ async fn device_command(command: &str, f: Flags) -> Result<()> {
                 return Err(error("invalid_client_device"));
             }
             let out = PathBuf::from(f.get("--out")?);
+            if !out
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.to_ascii_lowercase().ends_with(".wipstash-invite"))
+            {
+                return Err(error("invitation_output_requires_wipstash_invite_extension; this reserved credential format is excluded from source checkpoints"));
+            }
             private_directory(
                 out.parent()
                     .ok_or_else(|| error("invite_output_parent_required"))?,
@@ -657,8 +724,10 @@ async fn join(f: Flags) -> Result<()> {
         return Err(error("absolute_state_path_required"));
     }
     let status = check_binding(&p, true).await?;
-    reject_workspace_overlap(&dir,true,&status)?;
-    if f.has("--invite-file") { reject_workspace_overlap(Path::new(f.get("--invite-file")?),false,&status)?; }
+    reject_workspace_overlap(&dir, true, &status)?;
+    if f.has("--invite-file") {
+        reject_workspace_overlap(Path::new(f.get("--invite-file")?), false, &status)?;
+    }
     if dir.join("profile.json").exists() {
         let existing: Profile = load(&dir.join("profile.json"))?;
         if serde_json::to_value(&existing)? != serde_json::to_value(&p)? {
@@ -667,7 +736,7 @@ async fn join(f: Flags) -> Result<()> {
     }
     println!("Pairing device {} with authority {}, project {} (client access). Trust depends on how you received the invitation.",p.device,p.authority,p.project);
     save(&dir.join("join-profile-intent.json"), &p)?;
-    private_directory(&dir.join("credentials"),true)?;
+    private_directory(&dir.join("credentials"), true)?;
     let intent_path = dir.join("credentials/join-intent.json");
     let intent: JoinIntent = if intent_path.exists() {
         let i: JoinIntent = load(&intent_path)?;
@@ -915,7 +984,7 @@ async fn inspect(f: Flags, doctor: bool) -> Result<()> {
     }
     Ok(())
 }
-const HELP:&str="Guided pairing (absolute paths required):\n  wipstash remote setup --directory PRIVATE_DIR --state ENGINE_STATE --project NAME --authority NAME --device NAME [--source INITIAL_SOURCE] [--engine ENGINE] [--epoch 1] [--server-name localhost] [--enrollment-address 127.0.0.1:7444] [--sync-address 127.0.0.1:7443]\n  wipstash remote serve --directory PRIVATE_DIR\n  wipstash remote device invite --directory PRIVATE_DIR --device NAME --out PRIVATE_FILE [--expires-in 900]\n  wipstash remote join --directory PRIVATE_DIR --state ENGINE_STATE (--invite-file PRIVATE_FILE | --invite-stdin) [--engine ENGINE]\n  wipstash remote device list --directory PRIVATE_DIR\n  wipstash remote device revoke --directory PRIVATE_DIR --device NAME\n  wipstash remote device cancel-invite --directory PRIVATE_DIR --device NAME\n  wipstash remote device rotate --directory PRIVATE_DIR --device NAME --generation N --out PRIVATE_FILE\n  wipstash remote status --directory PRIVATE_DIR\n  wipstash remote doctor --directory PRIVATE_DIR [--online]\nProfiles and invitation files must be outside all source and managed workspace directories. Invitations are secrets: never paste them into command arguments. Transfer invitation files privately. No automatic publishing, adoption, service installation or IdP setup.";
+const HELP:&str="Guided pairing (absolute paths required):\n  wipstash remote setup --directory PRIVATE_DIR --state ENGINE_STATE --project NAME --authority NAME --device NAME [--source INITIAL_SOURCE] [--engine ENGINE] [--epoch 1] [--server-name localhost] [--enrollment-address 127.0.0.1:7444] [--sync-address 127.0.0.1:7443]\n  wipstash remote serve --directory PRIVATE_DIR\n  wipstash remote device invite --directory PRIVATE_DIR --device NAME --out PRIVATE_FILE.wipstash-invite [--expires-in 900]\n  wipstash remote join --directory PRIVATE_DIR --state ENGINE_STATE (--invite-file PRIVATE_FILE | --invite-stdin) [--engine ENGINE]\n  wipstash remote device list --directory PRIVATE_DIR\n  wipstash remote device revoke --directory PRIVATE_DIR --device NAME\n  wipstash remote device cancel-invite --directory PRIVATE_DIR --device NAME\n  wipstash remote device rotate --directory PRIVATE_DIR --device NAME --generation N --out PRIVATE_FILE.wipstash-invite\n  wipstash remote status --directory PRIVATE_DIR\n  wipstash remote doctor --directory PRIVATE_DIR [--online]\nProfiles and invitation files must be outside all source and managed workspace directories. Invitations are secrets: never paste them into command arguments. Transfer invitation files privately. No automatic publishing, adoption, service installation or IdP setup.";
 /// Dispatch guided commands; false preserves legacy serve/worker/client syntax.
 pub async fn run(args: &[String]) -> Result<bool> {
     let Some(command) = args.first().map(String::as_str) else {
@@ -1085,9 +1154,14 @@ mod tests {
             key_pem: "synthetic-only-key".into(),
             scope: p.scope.clone(),
         };
-        private_directory(&root.join("credentials"),true).unwrap();
-        save(&root.as_path().join("credentials/join-intent.json"), &intent).unwrap();
-        let resumed: JoinIntent = load(&root.as_path().join("credentials/join-intent.json")).unwrap();
+        private_directory(&root.join("credentials"), true).unwrap();
+        save(
+            &root.as_path().join("credentials/join-intent.json"),
+            &intent,
+        )
+        .unwrap();
+        let resumed: JoinIntent =
+            load(&root.as_path().join("credentials/join-intent.json")).unwrap();
         assert_eq!(resumed.request_id, intent.request_id);
         assert_eq!(resumed.csr_der, intent.csr_der);
         assert_eq!(resumed.key_pem, intent.key_pem);
@@ -1123,7 +1197,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().canonicalize().unwrap();
         fs::set_permissions(root.as_path(), fs::Permissions::from_mode(0o700)).unwrap();
-        private_directory(&root.join("credentials"),true).unwrap();
+        private_directory(&root.join("credentials"), true).unwrap();
         let path = root.as_path().join("credentials/join-intent.json");
         save(&path, &json!({"synthetic":"pending"})).unwrap();
         let before = read_private(&path).unwrap();
@@ -1185,66 +1259,127 @@ mod tests {
     }
     #[test]
     fn malformed_or_stale_binding_probe_fails_closed() {
-        let good=json!({"ok":true,"state":"unconfigured","initialized":false,"config":null,"pending_config":null,"workspace_roots":[]});
+        let good = json!({"ok":true,"state":"unconfigured","initialized":false,"config":null,"pending_config":null,"workspace_roots":[]});
         assert!(validate_probe(&good).is_ok());
-        let mut missing=good.clone();missing.as_object_mut().unwrap().remove("workspace_roots");assert!(validate_probe(&missing).is_err());
-        let mut malformed=good.clone();malformed["workspace_roots"]=json!(["relative"]);assert!(validate_probe(&malformed).is_err());
-        let mut stale=good;stale["state"]=json!("configured");stale["initialized"]=json!(true);stale["config"]=json!({});stale["pending_config"]=json!({});assert!(validate_probe(&stale).is_err());
+        let mut missing = good.clone();
+        missing.as_object_mut().unwrap().remove("workspace_roots");
+        assert!(validate_probe(&missing).is_err());
+        let mut malformed = good.clone();
+        malformed["workspace_roots"] = json!(["relative"]);
+        assert!(validate_probe(&malformed).is_err());
+        let mut stale = good;
+        stale["state"] = json!("configured");
+        stale["initialized"] = json!(true);
+        stale["config"] = json!({});
+        stale["pending_config"] = json!({});
+        assert!(validate_probe(&stale).is_err());
     }
     #[cfg(unix)]
     #[test]
     fn missing_workspace_allows_metadata_probe_but_blocks_secret_creation() {
-        let temp=tempfile::tempdir().unwrap();let root=temp.path().canonicalize().unwrap();
-        let missing=root.join("deleted-unrelated-workspace");
-        let status=json!({"ok":true,"state":"unconfigured","initialized":false,"config":null,"pending_config":null,"workspace_roots":[missing]});
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        let missing = root.join("deleted-unrelated-workspace");
+        let status = json!({"ok":true,"state":"unconfigured","initialized":false,"config":null,"pending_config":null,"workspace_roots":[missing]});
         assert!(validate_probe(&status).is_ok());
-        assert_eq!(workspace_roots(&status).unwrap(),vec![missing]);
-        let profile=root.join("private-profile");private_directory(&profile,true).unwrap();
-        assert!(reject_workspace_overlap(&profile,true,&status).unwrap_err().to_string().starts_with("workspace_path_unavailable"));
-        assert_eq!(std::fs::read_dir(&profile).unwrap().count(),0);
+        assert_eq!(workspace_roots(&status).unwrap(), vec![missing]);
+        let profile = root.join("private-profile");
+        private_directory(&profile, true).unwrap();
+        assert!(reject_workspace_overlap(&profile, true, &status)
+            .unwrap_err()
+            .to_string()
+            .starts_with("workspace_path_unavailable"));
+        assert_eq!(std::fs::read_dir(&profile).unwrap().count(), 0);
     }
     #[cfg(unix)]
     #[test]
     fn workspace_profile_and_invitation_output_are_rejected_without_writes() {
-        let temp=tempfile::tempdir().unwrap();let root=temp.path().canonicalize().unwrap();
-        let workspace=root.join("workspace");private_directory(&workspace,true).unwrap();
-        let profile=workspace.join("profile");private_directory(&profile,true).unwrap();
-        let original=workspace.join("source.txt");std::fs::write(&original,b"unchanged source").unwrap();
-        let status=json!({"workspace_roots":[workspace]});
-        assert!(reject_workspace_overlap(&profile,true,&status).is_err());
-        assert!(reject_workspace_overlap(&workspace.join("invite.json"),false,&status).is_err());
-        assert!(!workspace.join("invite.json").exists());assert_eq!(std::fs::read(&original).unwrap(),b"unchanged source");
-        let sibling=root.join("private-profile");private_directory(&sibling,true).unwrap();
-        assert!(reject_workspace_overlap(&sibling,true,&status).is_ok());
-        assert!(reject_workspace_overlap(&root,true,&status).is_err());
-        let input=workspace.join("incoming.json");write_private(&input,b"synthetic invitation").unwrap();
-        assert!(reject_workspace_overlap(&input,false,&status).is_err());assert_eq!(read_private(&input).unwrap(),b"synthetic invitation");
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        let workspace = root.join("workspace");
+        private_directory(&workspace, true).unwrap();
+        let profile = workspace.join("profile");
+        private_directory(&profile, true).unwrap();
+        let original = workspace.join("source.txt");
+        std::fs::write(&original, b"unchanged source").unwrap();
+        let status = json!({"workspace_roots":[workspace]});
+        assert!(reject_workspace_overlap(&profile, true, &status).is_err());
+        assert!(reject_workspace_overlap(&workspace.join("invite.json"), false, &status).is_err());
+        assert!(!workspace.join("invite.json").exists());
+        assert_eq!(std::fs::read(&original).unwrap(), b"unchanged source");
+        let sibling = root.join("private-profile");
+        private_directory(&sibling, true).unwrap();
+        assert!(reject_workspace_overlap(&sibling, true, &status).is_ok());
+        assert!(reject_workspace_overlap(&root, true, &status).is_err());
+        let input = workspace.join("incoming.json");
+        write_private(&input, b"synthetic invitation").unwrap();
+        assert!(reject_workspace_overlap(&input, false, &status).is_err());
+        assert_eq!(read_private(&input).unwrap(), b"synthetic invitation");
     }
     #[cfg(unix)]
     #[tokio::test]
     async fn setup_source_overlap_fails_before_import_or_secret_creation() {
         use std::os::unix::fs::PermissionsExt;
-        let temp=tempfile::tempdir().unwrap();let root=temp.path().canonicalize().unwrap();
-        let source=root.join("source");private_directory(&source,true).unwrap();
-        let original=source.join("original.txt");std::fs::write(&original,b"original source").unwrap();
-        let profile=source.join("private-profile");
-        let engine=root.join("synthetic-engine");
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        let source = root.join("source");
+        private_directory(&source, true).unwrap();
+        let original = source.join("original.txt");
+        std::fs::write(&original, b"original source").unwrap();
+        let profile = source.join("private-profile");
+        let engine = root.join("synthetic-engine");
         std::fs::write(&engine,b"#!/bin/sh\nprintf '%s\\n' '{\"ok\":true,\"state\":\"unconfigured\",\"initialized\":false,\"config\":null,\"pending_config\":null,\"workspace_roots\":[]}'\n").unwrap();
-        std::fs::set_permissions(&engine,std::fs::Permissions::from_mode(0o700)).unwrap();
-        let args=vec!["--directory".into(),profile.to_str().unwrap().into(),"--source".into(),source.to_str().unwrap().into(),"--state".into(),root.join("state").to_str().unwrap().into(),"--engine".into(),engine.to_str().unwrap().into(),"--project".into(),"p".into(),"--authority".into(),"a".into(),"--device".into(),"ad".into()];
-        let flags=Flags::parse(&args,&["--directory","--source","--state","--engine","--project","--authority","--device"]).unwrap();
-        assert!(setup(flags).await.unwrap_err().to_string().starts_with("profile_overlaps_source"));
-        assert_eq!(std::fs::read(&original).unwrap(),b"original source");
-        assert_eq!(std::fs::read_dir(&profile).unwrap().count(),0);assert!(!root.join("state").exists());
-        assert!(reject_source_overlap(&source,&profile).is_err());
+        std::fs::set_permissions(&engine, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let args = vec![
+            "--directory".into(),
+            profile.to_str().unwrap().into(),
+            "--source".into(),
+            source.to_str().unwrap().into(),
+            "--state".into(),
+            root.join("state").to_str().unwrap().into(),
+            "--engine".into(),
+            engine.to_str().unwrap().into(),
+            "--project".into(),
+            "p".into(),
+            "--authority".into(),
+            "a".into(),
+            "--device".into(),
+            "ad".into(),
+        ];
+        let flags = Flags::parse(
+            &args,
+            &[
+                "--directory",
+                "--source",
+                "--state",
+                "--engine",
+                "--project",
+                "--authority",
+                "--device",
+            ],
+        )
+        .unwrap();
+        assert!(setup(flags)
+            .await
+            .unwrap_err()
+            .to_string()
+            .starts_with("profile_overlaps_source"));
+        assert_eq!(std::fs::read(&original).unwrap(), b"original source");
+        assert_eq!(std::fs::read_dir(&profile).unwrap().count(), 0);
+        assert!(!root.join("state").exists());
+        assert!(reject_source_overlap(&source, &profile).is_err());
     }
     #[cfg(unix)]
     #[test]
     fn root_level_legacy_secret_journals_are_never_silently_migrated() {
-        let temp=tempfile::tempdir().unwrap();let root=temp.path().canonicalize().unwrap();
-        let legacy=root.join("bootstrap.json");write_private(&legacy,b"synthetic legacy secret").unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap().join("private");
+        private_directory(&root, true).unwrap();
+        let legacy = root.join("bootstrap.json");
+        write_private(&legacy, b"synthetic legacy secret").unwrap();
         assert!(reject_legacy_secret_journals(&root).is_err());
-        assert_eq!(read_private(&legacy).unwrap(),b"synthetic legacy secret");assert!(!root.join("credentials").exists());
+        assert_eq!(read_private(&legacy).unwrap(), b"synthetic legacy secret");
+        assert!(!root.join("credentials").exists());
     }
     #[cfg(unix)]
     #[test]

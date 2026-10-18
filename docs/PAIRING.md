@@ -30,10 +30,10 @@ Defaults bind loopback (`127.0.0.1:7444` enrollment, `127.0.0.1:7443` sync), wit
 
 ```sh
 wipstash remote device invite --directory /private/authority \
-  --device laptop --out /private/invites/laptop.invite
+  --device laptop --out /private/invites/laptop.wipstash-invite
 ```
 
-The output parent must already exist and be private. Invitation files are create-only. An invitation lasts 15 minutes by default; `--expires-in SECONDS` accepts 60–86400. Invite reserves the engine peer before creating a network grant invitation; reservation alone grants no access. Pre-existing engine peers without a matching pairing intent are not silently claimed.
+Invitation output filenames must end in `.wipstash-invite`. This reserved credential format is excluded from Wipstash checkpoints, in addition to the source/workspace placement checks. The output parent must already exist and be private. Invitation files are create-only. An invitation lasts 15 minutes by default; `--expires-in SECONDS` accepts 60–86400. Invite reserves the engine peer before creating a network grant invitation; reservation alone grants no access. Pre-existing engine peers without a matching pairing intent are not silently claimed.
 
 If an invitation output is lost or writing it fails after reservation, inspect the protected output first. To explicitly invalidate only pending invitations and reissue, run `wipstash remote device cancel-invite --directory /private/authority --device laptop`, then repeat `device invite` (or `device rotate` for an existing generation) with a new output path. This does not revoke an active device or reuse a retired identity.
 
@@ -43,7 +43,7 @@ Transfer the entire invitation through a trusted private channel. The invitation
 
 ```sh
 wipstash remote join --directory /private/laptop --state /private/laptop-state \
-  --invite-file /private/invites/laptop.invite
+  --invite-file /private/invites/laptop.wipstash-invite
 ```
 
 For a protected pipe, use `--invite-stdin` instead of `--invite-file`; stdin is bounded. File input must satisfy the same private-storage checks. `--engine /absolute/wipstash` overrides the fixed sibling engine for setup and join.
@@ -79,9 +79,9 @@ Revocation takes effect for subsequent requests, including requests on existing 
 ```sh
 wipstash remote device list --directory /private/authority
 wipstash remote device rotate --directory /private/authority --device laptop \
-  --generation 1 --out /private/invites/laptop-replacement.invite
+  --generation 1 --out /private/invites/laptop-replacement.wipstash-invite
 wipstash remote join --directory /private/laptop-generation-2 --state /private/laptop-state \
-  --invite-file /private/invites/laptop-replacement.invite
+  --invite-file /private/invites/laptop-replacement.wipstash-invite
 ```
 
 Use the actual current generation from `device list`. Join the replacement into a new private profile directory while retaining the same client engine state and identity. The old generation is revoked atomically when replacement enrollment commits. Switch the worker to the new profile only after installation. Existing resumable transfers must restart under IDs derived from the new certificate fingerprint; operation IDs, replay history and receipt ownership remain stable. Authority CA and server-pin rotation require a separate trusted rollout and are not handled by device rotation.

@@ -2,13 +2,19 @@
 
 The same `services/transport` binary serves a LAN coordinator or a hosted
 coordinator. Hosting, certificate provisioning, firewall configuration and DNS are
-operator responsibilities. The implementation exists; this cloud test environment
-has not run a listening service, so deployed LAN/WAN operation is not yet verified.
-No public endpoint, certificate authority or credentials have been provisioned.
+operator responsibilities. Native GitHub CI has run real loopback listeners and
+four independently enrolled scripted device identities on Linux, macOS and Windows.
+This supersedes the earlier no-listener evidence boundary, but deployed multi-host
+LAN/WAN operation remains unverified. No public endpoint, real credential vault or
+production credentials have been provisioned; CI generates disposable synthetic
+CAs, certificates and invitations.
 
 ## Trust boundary
 
-Every connection requires TLS client authentication against the configured CA.
+Every sync connection requires TLS client authentication against the configured CA.
+Guided pairing uses a separate server-authenticated TLS enrollment endpoint with
+invitation authorization and proof of possession; it does not expose sync routes or
+permit unauthenticated sync access.
 Clients also pin the authority certificate's SHA-256 DER fingerprint. The server
 maps each client certificate fingerprint to a project/device/role ACL entry,
 rechecking current ACL authorization for each request. HTTP identity headers are
@@ -22,6 +28,14 @@ shell operations. Received objects are quarantined and verified before admission
 
 ## Components
 
+Use [guided remote pairing](PAIRING.md) for normal setup, invitation, join, device
+revocation and replacement. `wipstash remote setup` generates the protected
+authority profile without starting listeners; `wipstash remote serve` explicitly
+starts the separate enrollment and sync endpoints. `remote join` verifies a
+read-only authenticated connection and does not publish or adopt source.
+
+The following legacy/manual commands remain supported:
+
 - `wipstash-transport serve /absolute/service.json`: authenticated authority service
   plus its serialized autonomous integration worker.
 - `wipstash-transport worker /absolute/client.json`: durable client outbox and head /
@@ -34,7 +48,9 @@ The exact strict configuration fields are defined by `Config` in
 state, staging and certificate paths must be operator-controlled. State and staging
 must be separate, disjoint directories outside source workspaces. Keep private-key
 files outside source repositories and never publish real configuration files.
-Existing credentials are read; configuration does not create or enroll devices.
+The manual service/client configuration reads existing credentials. Guided setup
+and join are the separate credential-generation/enrollment path; they do not
+provision credentials into native vaults.
 
 Server fields: engine, state, staging, project, authority, epoch, device, acl, ca,
 certificate, key, listen and optional limits. Client fields: engine, state, staging,
@@ -73,10 +89,26 @@ certificate matching, rotation and TLS operation must still be validated on each
 native OS before deployment. No real credential-store runtime acceptance is
 claimed here.
 
-ACL files contain `peers`, a map from lowercase certificate SHA-256 fingerprints
-to `{device, project, role: "client", revoked}` records. Replace ACL files
-atomically when revoking a device. Rotation requires an explicit trusted
-configuration update; certificates cannot self-authorize replacement identities.
+### Managed authorization and legacy ACL files
+
+Guided profiles use `acl: {"managed": "/absolute/authority/pairing.sqlite"}`.
+The protected SQLite store is authoritative for device state, active certificate
+generation, invitations and revocation; it is rechecked on each request, including
+requests on existing TLS connections. Rotation commits the replacement generation
+and revokes the old certificate atomically. Already admitted work may finish.
+Do not edit pairing journals or treat them as authorization records.
+
+Legacy `acl: "/absolute/acl.json"` remains supported. Its `peers` map keys are
+lowercase certificate SHA-256 fingerprints, with
+`{device, project, role: "client", revoked}` records. Replace these files atomically
+for revocation and explicitly update trusted configuration for rotation. Neither
+mode permits certificates to self-authorize replacement identities.
+
+Guided secret storage is protected for the current execution account: Unix
+0700/0600 modes and Windows protected DACL verification. Unsupported protection
+fails closed. It does not create a different service account or establish real
+native-vault provisioning. Profile secrets must remain outside source workspaces;
+see [PAIRING.md](PAIRING.md) for restart journals and trusted invitation transfer.
 
 ## Delivery and failure behavior
 
@@ -107,8 +139,13 @@ Before exposing a real host, verify native filesystem durability, certificate
 issuance/rotation/revocation, service supervision, bounded resource use and
 recovery from a stopped authority. Then run four independent clients over actual
 TLS with delay, disconnects, lost acknowledgements, stale epochs and revocation.
-Retain the build hash and transcripts. Existing in-memory TLS and injected
-transport tests do not establish real hosted network behavior or power-loss safety.
+Retain the build hash and redacted evidence. Passing native-CI guided pairing
+establishes selected actual loopback TLS and managed device-lifecycle contracts.
+The separate real-TLS upload-fault campaign is not yet passed: its initial run hit
+a fixture `sequence_gap` after successful compilation. In-memory tests, application
+fault injection and real loopback sockets do not establish hosted multi-machine
+network behavior or power-loss safety. See [SCOPE.md](SCOPE.md) for revision-specific
+evidence and [tests/README.md](../tests/README.md) for guarded CI commands.
 
 Never disable TLS verification, use a plaintext fallback or run concurrent writable
 authorities. Recovery activation currently relies on an explicit operator assertion

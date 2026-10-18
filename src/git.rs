@@ -239,6 +239,7 @@ fn excluded(name: &str) -> bool {
                 | "agent-transcripts"
         )
         || n.starts_with(".aider.")
+        || n.ends_with(".wipstash-invite")
         || n.ends_with(".pem")
         || n.ends_with(".key")
 }
@@ -891,12 +892,14 @@ mod tests {
         let bytes = b"\0binary\r\n<<<<<<< literal\n\xff";
         fs::write(src.join("a.bin"), bytes).unwrap();
         fs::write(src.join(".env"), b"SECRET").unwrap();
+        fs::write(src.join("device.wipstash-invite"), b"SYNTHETIC INVITE").unwrap();
         fs::create_dir(src.join("node_modules")).unwrap();
         fs::write(src.join("node_modules/x"), b"cache").unwrap();
         let tree = g.capture(&src).unwrap();
         g.materialize(&tree, &dst).unwrap();
         assert_eq!(fs::read(dst.join("a.bin")).unwrap(), bytes);
         assert!(!dst.join(".env").exists());
+        assert!(!dst.join("device.wipstash-invite").exists());
         assert!(!dst.join("node_modules").exists());
         assert!(g.materialize(&tree, &dst).is_err());
     }

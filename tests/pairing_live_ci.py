@@ -251,8 +251,10 @@ class Runner:
         source.mkdir(mode=0o700)
         (source / "hello.txt").write_text("synthetic public seed\n", encoding="utf-8")
         markers = ["PAIRING_CI_PRIVATE_ENV_" + os.urandom(16).hex(),
-                   "PAIRING_CI_PRIVATE_AGENT_" + os.urandom(16).hex()]
+                   "PAIRING_CI_PRIVATE_AGENT_" + os.urandom(16).hex(),
+                   "PAIRING_CI_PRIVATE_INVITE_" + os.urandom(16).hex()]
         (source / ".env").write_text(markers[0], encoding="utf-8")
+        (source / "stray.wipstash-invite").write_text(markers[2], encoding="utf-8")
         (source / ".agent").mkdir()
         (source / ".agent" / "session.txt").write_text(markers[1], encoding="utf-8")
         before_source = {str(p.relative_to(source)): hashlib.sha256(p.read_bytes()).hexdigest()
@@ -286,7 +288,7 @@ class Runner:
             require(authority_head is not None, "missing_authority_initial_head")
             profiles, states, snapshots = {}, {}, {}
             for name in ("alpha", "bravo", "charlie", "delta"):
-                invite = authority / (name + ".invite")
+                invite = authority / (name + ".wipstash-invite")
                 self.cli("invite", "device", "invite", "--directory", authority,
                          "--device", name, "--out", invite)
                 profiles[name], states[name] = root / name, root / (name + "-state")
@@ -302,7 +304,7 @@ class Runner:
             self.steps.append("four_independent_invite_join_online_doctor_and_list")
 
             # Cancel a pending replacement, preserving the active certificate.
-            canceled = authority / "charlie-canceled.invite"
+            canceled = authority / "charlie-canceled.wipstash-invite"
             self.cli("rotate_pending", "device", "rotate", "--directory", authority,
                      "--device", "charlie", "--generation", "1", "--out", canceled)
             self.cli("cancel_invite", "device", "cancel-invite", "--directory", authority,
@@ -334,7 +336,7 @@ class Runner:
                 self.doctor(profiles[name])
             self.steps.append("revoked_client_denied_other_three_accepted")
 
-            replacement = authority / "charlie-reissued.invite"
+            replacement = authority / "charlie-reissued.wipstash-invite"
             self.cli("reissue", "device", "rotate", "--directory", authority,
                      "--device", "charlie", "--generation", "1", "--out", replacement)
             rotated = root / "charlie-generation-2"
