@@ -56,7 +56,7 @@ class PeerAuthorization(unittest.TestCase):
 
     def test_binding_probe_never_initializes_or_recovers(self):
         fresh = self.root / 'fresh'
-        expected = dict(ok=True, state='unconfigured', initialized=False, config=None, pending_config=None)
+        expected = dict(ok=True, state='unconfigured', initialized=False, config=None, pending_config=None, workspace_roots=[])
         self.assertEqual(self.good(fresh, op='sync_binding_status'), expected)
         self.assertFalse(fresh.exists())
         fresh.mkdir()
@@ -84,6 +84,39 @@ class PeerAuthorization(unittest.TestCase):
         self.bad(state=fresh, op='sync_binding_status')
         (self.state / 'state.sqlite-journal').write_bytes(b'pending')
         self.bad('binding_inspection_requires_recovery', op='sync_binding_status')
+
+    def test_binding_probe_lists_workspace_roots_without_touching_live_files(self):
+        workspace = self.root / 'workspace'
+        opened = self.good(op='open', workspace='registered', path=str(workspace), operation_id='open')
+        sentinel = workspace / 'live.txt'
+        sentinel.write_text('user edits must remain untouched\n')
+        def snapshot(root):
+            return {str(p.relative_to(root)): (p.stat().st_mtime_ns, p.stat().st_mode,
+                    p.read_bytes() if p.is_file() else None) for p in root.rglob('*')}
+        before_state = snapshot(self.state)
+        before_workspace = snapshot(workspace)
+        result = self.good(op='sync_binding_status')
+        self.assertEqual(result['workspace_roots'], [opened['path']])
+        self.assertEqual(snapshot(self.state), before_state)
+        self.assertEqual(snapshot(workspace), before_workspace)
+        # Merely registered roots are reported without trying to read them.
+        missing = str((self.root / 'not-created').resolve())
+        self.execute_sql("INSERT INTO workspaces(id,path,base) VALUES('missing',?,'base')", (missing,))
+        result = self.good(op='sync_binding_status')
+        self.assertEqual(set(result['workspace_roots']), {missing, opened['path']})
+        self.assertFalse(Path(missing).exists())
+
+    def test_binding_probe_rejects_invalid_or_unbounded_workspace_roots(self):
+        for root in ['relative', '/absolute/../escape', '/nul\0path', 'x' * 4097, b'not-text']:
+            self.execute_sql("INSERT INTO workspaces(id,path,base) VALUES('malformed',?,'base')", (root,))
+            self.bad('invalid_workspace_root', op='sync_binding_status')
+            self.execute_sql("DELETE FROM workspaces WHERE id='malformed'")
+        with contextlib.closing(sqlite3.connect(self.state / 'state.sqlite')) as db, db:
+            db.executemany("INSERT INTO workspaces(id,path,base) VALUES(?,?,'base')",
+                           [(f'w-{i}', str(self.root / f'registered-{i}')) for i in range(1000)])
+        self.assertEqual(len(self.good(op='sync_binding_status')['workspace_roots']), 1000)
+        self.execute_sql("INSERT INTO workspaces(id,path,base) VALUES('overflow',?,'base')", (str(self.root / 'overflow'),))
+        self.bad('workspace_root_limit_exceeded', op='sync_binding_status')
 
     def test_client_initialization_resumes_exact_pending_binding(self):
         client = self.root / 'resume-client'

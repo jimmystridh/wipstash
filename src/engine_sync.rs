@@ -355,7 +355,7 @@ pub(super) fn add_peer(db: &Connection, r: &Value) -> R<Value> {
 /// Immutable SQLite avoids even WAL/shm creation. Pending journals fail closed
 /// instead of silently inspecting an older main-file snapshot.
 pub(super) fn binding_status(state: &Path) -> R<Value> {
-    let unconfigured = || json!({"ok":true,"state":"unconfigured","initialized":false,"config":null,"pending_config":null});
+    let unconfigured = || json!({"ok":true,"state":"unconfigured","initialized":false,"config":null,"pending_config":null,"workspace_roots":[]});
     match fs::symlink_metadata(state) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(unconfigured()),
         Err(e) => return Err(format!("io_error: {e}")),
@@ -416,8 +416,34 @@ pub(super) fn binding_status(state: &Path) -> R<Value> {
         return Err("incomplete_state: binding without authority metadata".into());
     }
     let pending = pending_config(&db)?;
+    // Bound both row count and individual allocation. Never silently omit invalid
+    // registrations: callers use this list to keep private pairing files out of
+    // publishable workspaces. Do not canonicalize or inspect live workspace data.
+    let mut stmt = sql(db.prepare(
+        "SELECT CASE WHEN typeof(path)='text' AND length(CAST(path AS BLOB)) BETWEEN 1 AND 4096 THEN path END FROM workspaces ORDER BY id LIMIT 1001",
+    ))?;
+    let mut workspace_roots = Vec::new();
+    for row in sql(stmt.query_map([], |row| row.get::<_, Option<String>>(0)))? {
+        let root = sql(row)?.ok_or("invalid_workspace_root")?;
+        let path = Path::new(&root);
+        if !path.is_absolute()
+            || root.contains('\0')
+            || path.components().any(|part| {
+                matches!(
+                    part,
+                    std::path::Component::ParentDir | std::path::Component::CurDir
+                )
+            })
+        {
+            return Err("invalid_workspace_root".into());
+        }
+        if workspace_roots.len() >= 1000 {
+            return Err("workspace_root_limit_exceeded".into());
+        }
+        workspace_roots.push(root);
+    }
     Ok(
-        json!({"ok":true,"state":if c.is_some(){"configured"}else{"unconfigured"},"initialized":initialized,"config":c,"pending_config":pending}),
+        json!({"ok":true,"state":if c.is_some(){"configured"}else{"unconfigured"},"initialized":initialized,"config":c,"pending_config":pending,"workspace_roots":workspace_roots}),
     )
 }
 pub(super) fn status(state: &Path, db: &Connection) -> R<Value> {

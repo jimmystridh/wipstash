@@ -88,3 +88,16 @@ artifacts require operator review rather than cleanup by the retry.
 Final configuration, authority metadata and pending-intent removal commit together.
 The read-only binding probe reports `pending_config` (null or that exact intent);
 it does not treat the pending intent as active authorization or initialized state.
+
+### Workspace exclusion boundary
+
+The binding probe also returns `workspace_roots`, including every registered
+canonical workspace path, or an empty array for fresh state. Pairing clients must
+reject private profile and invite-file destinations overlapping any of these
+roots, in addition to the explicit source root. The probe reads only registrations
+from the state database; it does not touch or resolve live workspace files.
+
+The list is bounded at 1000 roots and 4096 UTF-8 bytes per root. Malformed,
+nonabsolute, NUL-containing or parent-relative paths, invalid database rows and
+database errors fail closed. No invalid or excess registration is silently
+omitted. An over-limit result returns `workspace_root_limit_exceeded`.

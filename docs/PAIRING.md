@@ -14,6 +14,8 @@ These commands install the executables only. They do not create credentials or s
 
 ## Coordinator
 
+Profiles and invitation files must live outside every source tree and registered managed workspace. Setup rejects profile/source overlap before importing or generating keys; invitation export and join reject known-workspace overlap without deleting files. The read-only engine probe must supply a complete workspace list; missing metadata fails closed. Secret-creating setup, join, invite and rotation also fail closed if a registered workspace path cannot be resolved. Deleted unrelated workspace folders do not block serving, listing devices, revocation or cancellation of pending invitations; those operations validate stored path metadata without resolving workspace folders.
+
 Use an existing private parent directory. All paths must be absolute. Run as the account that will later run the listener. Example paths and addresses below are placeholders, not deployment instructions already executed:
 
 ```sh
@@ -91,3 +93,5 @@ Unix profiles require private directories and files (0700/0600), safe path trave
 Bootstrap and join journals intentionally retain sensitive material for restart. Treat the entire profile as a secret backup. Do not edit these journals or use them as authorization records; the coordinator's managed SQLite store is authoritative. Existing conflicting files are never overwritten. Private-file publication uses a flushed private staging file and no-replace publication. Interrupted staging files remain private; incomplete final journals fail closed and may require operator inspection.
 
 This implementation's local workflow tests use disposable synthetic fixtures only. Compilation, native platform checks, and end-to-end enrollment validation must pass the feature-branch CI gates before deployment. No real credentials, grants or listeners were provisioned while implementing it.
+
+Secret-bearing restart journals are stored under the profile’s private `credentials/` directory, which is excluded from workspace capture as defense in depth. Root-level legacy `bootstrap.json` or `join-intent.json` is rejected with a manual-review diagnostic; no automatic move, overwrite or deletion is performed. Review possible prior source exposure and rotate affected credentials before migration. Public profile, setup-intent and issued-response metadata remain outside that secret subdirectory.
