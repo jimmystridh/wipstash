@@ -1531,6 +1531,58 @@ mod regression_tests {
     }
 
     #[test]
+    fn feedback_zero_check_resolution_is_unchecked_despite_legacy_pending_flag() {
+        let p = Project::new();
+        let opened = fixed_resolution(&p);
+        let submitted = p.request(resolution_request(&opened, "unchecked-resolution-submit"));
+        assert_eq!(submitted["checks_pending"], true);
+        assert_eq!(submitted["checks_configured"], 0);
+        assert_eq!(submitted["validation"]["state"], "unchecked");
+        assert_eq!(submitted["next_action"]["op"], "proposal_status");
+        assert_eq!(submitted["next_action"]["reason"], "Proposal is queued. Observe its result; integration and adoption are separate actions.");
+    }
+
+    #[test]
+    fn feedback_resolution_heads_distinguish_capture_from_checkout_basis() {
+        let p = Project::new();
+        let task = conflicting_task(&p);
+        let captured = task["current_head"].clone();
+        assert_eq!(task["captured_head"], captured);
+        assert_eq!(task["current_head_scope"], "captured_at_quarantine");
+        fs::write(p.0.join("A/independent"), "accepted later\n").unwrap();
+        p.request(json!({"op":"checkpoint","workspace":"A","expected_generation":1,"operation_id":"heads-later-cp"}));
+        p.request(json!({"op":"publish","workspace":"A","checkpoint":"heads-later-cp","intent":"advance head","operation_id":"heads-later-pub"}));
+        assert_eq!(
+            p.request(json!({"op":"integrate"}))["outcomes"][0]["state"],
+            "integrated"
+        );
+        let request = json!({"op":"resolution_open","workspace":"B","proposal":"conflict-pub-B","resolution_workspace":"heads-fix","path":p.0.join("heads-fix"),"operation_id":"heads-open"});
+        let opened = p.request(request.clone());
+        assert_eq!(opened["resolution_head"], opened["current_head"]);
+        assert_eq!(opened["current_head_scope"], "resolution_checkout_basis");
+        assert_ne!(opened["resolution_head"], captured);
+        assert_eq!(opened["task"]["captured_head"], captured);
+        assert_eq!(opened["task"]["current_head"], captured);
+        assert_eq!(p.request(request), opened);
+        assert_eq!(
+            p.request(json!({"op":"operation_status","operation_id":"heads-open"})),
+            opened
+        );
+        let db = Connection::open(p.0.join("state/state.sqlite")).unwrap();
+        let wire_task = resolution::task(&db, "conflict-pub-B").unwrap().unwrap();
+        assert!(wire_task.get("captured_head").is_none());
+        assert!(wire_task.get("current_head_scope").is_none());
+        fs::write(p.0.join("heads-fix/a"), "explicit combined result\n").unwrap();
+        p.request(json!({"op":"checkpoint","workspace":"heads-fix","expected_generation":0,"operation_id":"heads-fixed-cp"}));
+        let mut submit = json!({"op":"resolution_submit","workspace":"B","proposal":"conflict-pub-B","resolution_workspace":"heads-fix","checkpoint":"heads-fixed-cp","expected_head":captured,"resolved_conflicts":["a"],"operation_id":"heads-reject-capture"});
+        let rejected = execute(&p.0.join("state"), submit.clone()).unwrap();
+        assert_eq!(rejected["error"]["code"], "stale_resolution");
+        submit["operation_id"] = json!("heads-submit-current");
+        submit["expected_head"] = opened["resolution_head"].clone();
+        assert_eq!(p.request(submit)["ok"], true);
+    }
+
+    #[test]
     fn feedback_recovered_promotion_does_not_reuse_prior_candidate_validation() {
         let p = Project::new();
         fs::write(p.0.join("A/a"), "new public candidate").unwrap();

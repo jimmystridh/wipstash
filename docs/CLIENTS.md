@@ -258,3 +258,37 @@ handshake/tool-list evidence, approved actual tool-call transcripts, checkpoint 
 publish / integrate / adopt outcomes, and lost-response recovery evidence from
 both products. Before claiming native OS support, retain successful native CI and
 filesystem/process acceptance results on each OS.
+
+### Resolution head identity
+
+Use the top-level `resolution_head` from the exact `resolution_open` response
+as `resolution_submit.expected_head`. Top-level `current_head` remains its
+compatibility alias, labeled `current_head_scope: resolution_checkout_basis`.
+The nested task's `captured_head` is historical quarantine evidence; its legacy
+`current_head` alias is labeled `current_head_scope: captured_at_quarantine`.
+Those heads can legitimately differ after public history advances. Never use
+the task's captured head or a freshly polled public head for an existing checkout.
+Old journaled responses remain exact and may lack the new labels; for those,
+use the original top-level `current_head`. Public receipt task fields are unchanged.
+
+The legacy `checks_pending` boolean describes queue-era submission status, not
+whether checks exist or await execution. Use `validation` and configured-check
+counts for check evidence; zero-check resolution submissions remain `unchecked`.
+Observe proposal integration separately instead of waiting for nonexistent checks.
+
+### Windows adoption durability boundary
+
+Adoption flushes file contents on all supported platforms. Unix also syncs
+directory entries. Windows rejects reparse paths and pins directory names against
+rename/removal, closes flushed staging handles, and publishes with same-directory
+`MoveFileExW` write-through moves without a cross-volume copy fallback.
+Windows directory-entry durability across power loss is not guaranteed;
+retained-storage process-crash recovery tests are not power-loss tests.
+File flush, publication, sharing, and path-validation failures remain errors
+requiring recovery or user review. Windows network/device paths are unsupported
+for this workflow and fail closed; use a local disk workspace.
+
+These are cooperative workspace guarantees: stop external/unmanaged writers
+before adoption. Directory handles do not create a hostile-writer sandbox.
+Windows readonly live/staged adoption inputs are rejected before mutation;
+Wipstash does not silently clear their readonly protection.

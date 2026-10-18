@@ -277,6 +277,7 @@ jobs:
         run: |
           cargo build --locked
           cargo test --locked client_journal::tests -- --show-output
+          cargo test --locked adoption::tests -- --show-output
           cargo test --locked --manifest-path services/transport/Cargo.toml pairing_files -- --show-output
       - name: Client helper and pressure harness regressions
         run: |

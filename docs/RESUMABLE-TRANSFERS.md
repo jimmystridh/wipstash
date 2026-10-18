@@ -145,9 +145,11 @@ The SQLite staging contract above is not a blanket durability claim for every
 trusted-core filesystem operation. Core Git materialization and directory-based
 artifact export currently flush regular files but only perform directory-entry
 flushes on Unix. Their Windows namespace durability has not been established by
-this transport work. Core adoption also still depends on Unix-style directory
-flushing and is not a supported Windows durable-adoption path; its failures must
-not be ignored or converted to successful flushes. Passing native resumable
+this transport work. Core adoption now uses an explicit Windows local-disk
+publication path with flushed file contents and write-through moves, subject to
+the [Windows adoption durability boundary](CLIENTS.md#windows-adoption-durability-boundary).
+It does not guarantee directory-entry persistence across power loss; file flush,
+publication and path-validation failures remain errors. Passing native resumable
 integration establishes functional import/replay, not physical power-loss
 survival of all core Git, export, or adoption paths.
 

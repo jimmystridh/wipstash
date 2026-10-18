@@ -20,6 +20,7 @@ fn output_schema() -> Value {
     json!({"type":"object","properties":{
         "ok":{"type":"boolean"},
         "validation":{"type":"object","description":"Snapshot-bound check evidence; passed never claims semantic correctness. Absence of checks is unchecked, not passed.","properties":{"state":{"enum":["unchecked","pending","passed","failed"]},"semantic_correctness_claimed":{"const":false}},"required":["state"]},
+        "checks_pending":{"type":"boolean","description":"Legacy queue-status flag; does not establish configured or pending checks. Structured validation and configured-check counts are authoritative for actual check evidence."},
         "generation":{"type":"integer","minimum":0},
         "current_generation":{"type":"integer","minimum":0},
         "checkpoint":{"type":["string","null"],"description":"Selected checkpoint ID; not the Git commit OID."},
@@ -38,7 +39,7 @@ fn field_schema(field: &str) -> Value {
         "include_record" => "Return an explicit recorded/pending envelope with the exact result nested under result. Defaults to the original unwrapped result. Distinguishes recorded failures from lookup failures.",
         "checkpoint" => "Explicit selected checkpoint ID returned by checkpoint, not its Git commit OID. Publication remains deliberate.",
         "expected_generation" => "Observed workspace generation returned by status or the previous mutation. A stale value rejects safely; do not guess or silently refresh and replay.",
-        "expected_head" => "Exact current_head returned by this resolution_open. Never substitute a newer head into an old resolution request.",
+        "expected_head" => "Exact top-level resolution_head returned by this resolution_open (legacy alias: top-level current_head). Nested task.captured_head/task.current_head is historical quarantine evidence, not the checkout basis. Never substitute a newer head into an old resolution request.",
         "resolved_conflicts" => "Exactly the unique conflict paths returned by resolution_open, including non-text conflicts. An explicit review attestation, not evidence of correctness; use [] when none.",
         "path" => "Absolute empty or nonexistent workspace directory; parent must exist. Keep separate from state, source and other workspaces.",
         "proposal" => "Proposal ID returned by publish or resolution_submit. Follow the replacement ID after resubmission.",

@@ -161,6 +161,18 @@ struct Journal {
     locked: bool,
     poisoned: bool,
 }
+impl Drop for Journal {
+    fn drop(&mut self) {
+        if self.locked {
+            // Closing our descriptor alone need not release a Unix flock: a
+            // concurrent fork can retain the same open file description until
+            // exec, even with CLOEXEC. End ownership explicitly before close so
+            // a new journal can reconcile immediately after EOF or an I/O fault.
+            // Closing the handle remains the fallback if unlock itself fails.
+            let _ = self.release();
+        }
+    }
+}
 impl Journal {
     fn open(path: &Path) -> io::Result<Self> {
         let directory = PrivateDirectory::open(path)?;
@@ -485,6 +497,30 @@ mod tests {
         let mut third = Journal::open(&path).unwrap();
         third.acquire().unwrap();
         assert!(second.acquire().is_err());
+    }
+    #[cfg(unix)]
+    #[test]
+    fn drop_releases_lock_while_an_inherited_descriptor_remains_open() {
+        for poisoned in [false, true] {
+            let (_root, path) = fixture();
+            let mut first = bound(&path);
+            // I/O uncertainty must not prevent unlock.
+            first.poisoned = poisoned;
+            // dup and fork share the same open file description. Model a concurrent
+            // subprocess between fork and exec without timing-dependent scheduling.
+            let inherited = first.lock.try_clone().unwrap();
+            let mut second = Journal::open(&path).unwrap();
+            assert_eq!(second.acquire().unwrap_err().to_string(), "journal_busy");
+            drop(first);
+            second.acquire().unwrap();
+            // The inherited descriptor must not create an overlap between clients.
+            let mut third = Journal::open(&path).unwrap();
+            assert_eq!(third.acquire().unwrap_err().to_string(), "journal_busy");
+            drop(inherited);
+            assert_eq!(third.acquire().unwrap_err().to_string(), "journal_busy");
+            second.release().unwrap();
+            third.acquire().unwrap();
+        }
     }
     #[test]
     fn no_access_without_lock_or_binding() {

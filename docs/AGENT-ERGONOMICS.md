@@ -87,3 +87,57 @@ native CI gates. Standalone Codex/Claude model-driven product-client UX remains
 unverified; earlier Codex runtime initialization was blocked by the host's
 read-only filesystem. The optional ChatGPT MCP Events service remains a separate
 sanitized read/notification interface, not this local mutating stdio adapter.
+
+## Fresh native model-agent campaign
+
+Three fresh autonomous native model actors independently implemented six utility
+features sharing one registry hotspot. The frozen binary/helper hashes above were
+used unchanged. Every one of six accepted public heads passed a fixed external
+invariant oracle, preserving previously accepted behavior; there were no failed
+intermediate heads or coordinator-written source fixes. This oracle audited after
+promotion and was not an engine integration gate.
+
+The campaign used seven long-lived MCP sessions and 72 actual tool calls, with
+six original publications, five accepted resolution submissions and one deliberate
+stale-head rejection followed by fresh-checkout recovery. Two completed replies
+were deliberately withheld before client receipt completion; exact request-bound
+operation recovery succeeded without duplicate mutation/promotion. All processes
+closed normally by EOF. Explicit observer adoption preserved private WIP.
+
+All 30 public blobs were canary-free, three historical private commits were absent
+from the public store, and 24 original-workspace comparisons were unchanged.
+Git/SQLite integrity passed. All 115 observed validation objects were honestly
+unchecked because no engine checks were configured. This bounded controlled
+campaign has no matched model baseline and establishes no throughput superiority
+or standalone Codex/Claude product-client acceptance.
+
+Evidence: [native model summary](../evidence/agent-ergonomics/native-model-summary.json).
+The campaign exposed historical nested task/current checkout head naming ambiguity.
+A separately tested follow-on adds explicit `captured_head`/`resolution_head` and
+scope labels, preserving legacy aliases and exact recorded replies. The frozen
+model campaign predates that patch. Legacy `checks_pending` is queue-era wording;
+use structured `validation` and configured-check counts for actual check evidence.
+
+## Native CI follow-on validation
+
+The first native CI run of the frozen implementation exposed a Linux journal-lock
+release race in the concurrent full suite and an unsupported Unix-style directory
+flush in Windows adoption. Linux/macOS ergonomics jobs passed; Windows validation
+and the overall delivery remained pending while these issues were repaired.
+Native platform repair results must be attributed to their later exact CI SHA.
+
+Follow-on local verification passed after the reviewed repairs: 14 feedback tests,
+8 MCP tests, 15 journal tests (25 including shared private-file coverage),
+13 adoption tests, 21 safe engine regressions, 30 Python helper tests and
+15 pressure-harness tests. Counts overlap. The deterministic real-stdio campaign
+passed again with the same 63-versus-15 observation count and equivalent state.
+See [follow-on local summary](../evidence/agent-ergonomics/follow-on-local-summary.json).
+
+Journal drop now explicitly unlocks inherited descriptors rather than waiting for
+all fork/exec copies to close; a deterministic regression reproduced the old
+failure and checks continued mutual exclusion. Harness SQLite probes explicitly
+close their handles, and secondary cleanup errors no longer mask primary failures.
+Windows adoption now uses a reviewed local-filesystem path with an explicit
+[durability boundary](CLIENTS.md#windows-adoption-durability-boundary), fail-closed
+readonly/reparse handling, and native-only path/sharing/recovery tests. Native CI
+must still establish runtime acceptance of that follow-on on all three platforms.

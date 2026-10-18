@@ -12,6 +12,45 @@ from unittest import mock
 import agent_ergonomics_pressure as pressure
 
 
+class CleanupTests(unittest.TestCase):
+    def test_cleanup_failure_does_not_mask_primary_failure(self):
+        summary = {}
+        primary = AssertionError("campaign failed")
+        def fail_cleanup():
+            raise PermissionError("locked file")
+        with self.assertRaises(AssertionError) as raised:
+            with pressure.cleanup_preserving_failure(fail_cleanup, summary):
+                raise primary
+        self.assertIs(raised.exception, primary)
+        self.assertEqual(summary["cleanup_failure_types"], ["PermissionError"])
+        self.assertEqual(primary.__notes__, ["Additional cleanup failure: PermissionError"])
+
+    def test_audit_closes_database_even_when_assertion_fails(self):
+        campaign = pressure.Campaign.__new__(pressure.Campaign)
+        campaign.state = Path("synthetic-unused")
+        campaign.command = mock.Mock(return_value=b"")
+        for integrity in ([("ok",)], [("bad",)]):
+            with self.subTest(integrity=integrity):
+                db = mock.Mock()
+                db.execute.return_value.fetchall.side_effect = [integrity, []]
+                with mock.patch.object(pressure.sqlite3, "connect", return_value=db):
+                    if integrity == [("ok",)]:
+                        campaign.audit("private")
+                    else:
+                        with self.assertRaises(AssertionError):
+                            campaign.audit("private")
+                db.close.assert_called_once_with()
+
+    def test_cleanup_failure_alone_still_fails(self):
+        summary = {}
+        def fail_cleanup():
+            raise PermissionError("locked file")
+        with self.assertRaises(PermissionError):
+            with pressure.cleanup_preserving_failure(fail_cleanup, summary):
+                pass
+        self.assertEqual(summary["cleanup_failure_types"], ["PermissionError"])
+
+
 class GuardTests(unittest.TestCase):
     def test_default_never_requires_or_enables_ci(self):
         pressure.require_ci_checks(False, {})

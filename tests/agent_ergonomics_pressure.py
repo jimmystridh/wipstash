@@ -13,7 +13,7 @@ private scratch state, even though every canary in this fixture is synthetic.
 """
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 import argparse
 import hashlib
 import importlib.util
@@ -314,7 +314,7 @@ class Campaign:
                 data = self.command(["git", "--git-dir", repo, "cat-file", "blob", oid])
                 check(PRIVATE_MARKER.encode() not in data, "Private canary in public object")
                 blobs += 1
-        with sqlite3.connect(self.state / "state.sqlite") as db:
+        with closing(sqlite3.connect(self.state / "state.sqlite")) as db:
             check(db.execute("pragma integrity_check").fetchall() == [("ok",)], "SQLite integrity")
             check(not db.execute("select proposal from promotions where state='committed' "
                                  "group by proposal having count(*) > 1").fetchall(), "Double promotion")
@@ -454,7 +454,7 @@ class Campaign:
         before = sum(self.ledger.calls.values())
         check(self.clients["D"].mutate(lost_request) == recovered, "Recovered receipt replay changed")
         check(before == sum(self.ledger.calls.values()), "Recovered terminal receipt called engine again")
-        with sqlite3.connect(self.state / "state.sqlite") as db:
+        with closing(sqlite3.connect(self.state / "state.sqlite")) as db:
             count = db.execute("select count(*) from checkpoints where id=?", (lost_request["operation_id"],)).fetchone()[0]
             check(count == 1, "Withheld response produced duplicate checkpoint")
         self.assertions.append("withheld completed response recovered after graceful session restart via operation_status, without mutation replay")
@@ -551,6 +551,27 @@ def compare_runs(baseline, compact):
                                 "power-loss or pre-commit crash recovery", "multi-host isolation"]}
 
 
+@contextmanager
+def cleanup_preserving_failure(cleanup, summary):
+    """Always attempt cleanup without replacing the campaign's primary failure."""
+    primary = None
+    try:
+        yield
+    except BaseException as error:
+        primary = error
+        raise
+    finally:
+        try:
+            cleanup()
+        except Exception as error:
+            summary.setdefault("cleanup_failure_types", []).append(type(error).__name__)
+            if primary is None:
+                raise
+            add_note = getattr(primary, "add_note", None)
+            if callable(add_note):
+                add_note("Additional cleanup failure: " + type(error).__name__)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", type=Path, default=ROOT / "target/debug" / ("wipstash.exe" if os.name == "nt" else "wipstash"))
@@ -570,13 +591,13 @@ def main(argv=None):
                "required_checks_requested": args.required_checks_ci, "runs": []}
     args.artifacts.mkdir(parents=True, exist_ok=True)
     try:
-        with tempfile.TemporaryDirectory(prefix="wip-ergo-") as scratch:
+        temporary = tempfile.TemporaryDirectory(prefix="wip-ergo-")
+        with cleanup_preserving_failure(temporary.cleanup, summary):
+            scratch = temporary.name
             for mode in ("repeated_reads", "compact_status"):
                 campaign = Campaign(binary, Path(scratch).resolve() / mode, mode, helper, args.required_checks_ci)
-                try:
+                with cleanup_preserving_failure(campaign.cleanup, summary):
                     summary["runs"].append(campaign.run())
-                finally:
-                    campaign.cleanup()
                 summary["runs"][-1]["verified_graceful_eof_shutdowns"] = campaign.eof_shutdowns
             summary["comparison"] = compare_runs(*summary["runs"])
         summary["state"] = "passed"

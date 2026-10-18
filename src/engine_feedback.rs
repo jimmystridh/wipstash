@@ -215,6 +215,9 @@ fn task_feedback(db: &Connection, task: &mut Value) {
         next["arguments"]["workspace"] = json!(workspace);
     }
     task["next_action_hint"] = next;
+    // Compatibility: task.current_head is historical quarantine evidence.
+    task["captured_head"] = task["current_head"].clone();
+    task["current_head_scope"] = json!("captured_at_quarantine");
     let evidence: Option<(String, Option<String>)> = db
         .query_row(
             "SELECT commit_oid,details FROM proposals WHERE id=?1",
@@ -262,6 +265,10 @@ pub(super) fn complete(db: &Connection, r: &Value, mut v: Value) -> Value {
             | "resolution_tasks"
     ) {
         return v;
+    }
+    if op == "resolution_open" && v["ok"] == true {
+        v["resolution_head"] = v["current_head"].clone();
+        v["current_head_scope"] = json!("resolution_checkout_basis");
     }
     let (configured, required) = policy_counts(db);
     v["checks_configured"] = json!(configured);

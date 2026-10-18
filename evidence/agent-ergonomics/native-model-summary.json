@@ -1,0 +1,155 @@
+{
+  "verdict": "PASS: every accepted head preserved already accepted behavior",
+  "campaign": "Three fresh native autonomous model actors using an unmodified maintained helper over real long-lived stdio MCP",
+  "source": {
+    "fixture_manifest": {
+      ".gitignore": "862263fa1f46c20f0d1e4dac5ffcc75abd55c08211b2c3864c5f8764b9d87793",
+      "batching.py": "f85dd50642ec70ac70d277c4b047d2b754af0411f79021a4b1d9ac949516d0c4",
+      "registry.py": "d5ecab2bb0bef3882058dafc24615d9100db5091c2d4755c7709f6d106aefe38",
+      "runs.py": "f59a4397b405bdcf0efe438bff128e32d92bddb39b5af3015ad62500fe9b6806",
+      "schedule.py": "e5cf950fa43bf51063d35b97bd27798b60235370453a2e1102dba8cb14927b89"
+    },
+    "oracle_sha256": "25027d8de54557a0df857f4e6f535d9ddd987529edd74101faf4150b533cecb8",
+    "requirements_sha256": "96cb2968bc24792612dcb0c82cdf12cf0fe82eab2a31937d6172e58a203d6310",
+    "baseline_oracle_passed": true,
+    "native_actor_count": 3,
+    "features": 6,
+    "engine_policy": "default empty checks; no configured command process",
+    "binary_sha256": "17f5b3870e01b77529f305b6a245f8095d9e936e52a53d13eb8cf384941ace89",
+    "helper_sha256": "a1725ad3153a06086307fa55b74c96b5d0eaf02ed85391f60424c0df8e62db36",
+    "bridge_sha256": "a168360856a5af23d7744fe947512cbf85802f7a1bd17f61183f8c989a3a6ede",
+    "source_head": "4fe9cb0388ce1e919e4e995cfcb486c2f1aa5cc6",
+    "frozen_at": 1792342956.346105,
+    "helper_unmodified": true,
+    "architecture": "fresh native model actors + maintained durable helper + actual long-lived stdio MCP; transparent pipe recording controller",
+    "parent_reported_published_source_commit": "4af619b936a364abc5f3f716eae03364e50c5a48"
+  },
+  "not_product_client_acceptance": true,
+  "native_actors": [
+    "schedule",
+    "batching",
+    "runs"
+  ],
+  "accepted_heads_excluding_initial": 6,
+  "semantic_failed_intermediate_heads": 0,
+  "failed_heads": [],
+  "final_public_head": "52e8740918f7c6af286a3482e697dd259b33fc27",
+  "final_features": [
+    "clock_minutes",
+    "compress_runs",
+    "expand_runs",
+    "padding_needed",
+    "round_up_slot",
+    "split_batches"
+  ],
+  "proposal_states": {
+    "integrated": 6,
+    "superseded": 5
+  },
+  "committed_promotions": 6,
+  "duplicate_committed_promotions": 0,
+  "successful_publish_responses": 5,
+  "deliberate_publication_calls": 6,
+  "accepted_resolution_submissions": 5,
+  "resolution_opens": 6,
+  "native_journal_sessions": 5,
+  "stale_resolution_rejections": 1,
+  "isolated_resolution_original_manifest_checks": 24,
+  "all_original_manifest_checks_unchanged": true,
+  "historical_private_checkpoints_absent_public": [
+    {
+      "actor": "schedule",
+      "checkpoint": "schedule_history_20261018",
+      "commit": "f0b4eb4597879764c0585e9abfdd065e4c6d750a"
+    },
+    {
+      "actor": "batching",
+      "checkpoint": "batching-history-20261018-1",
+      "commit": "6516b4abcff10719018c0811dbb25e53b47f297d"
+    },
+    {
+      "actor": "runs",
+      "checkpoint": "runs-history-20261018-001",
+      "commit": "6ba0dced9178a28bdbcee3c1d54904a9e65611c6"
+    }
+  ],
+  "public_blobs_scanned_for_private_canaries": 30,
+  "live_canaries_preserved": 3,
+  "git_fsck_passed": true,
+  "sqlite_integrity_passed": true,
+  "engine_configured_checks": 0,
+  "validation_records_checked": 115,
+  "empty_checks_never_claimed_passed": true,
+  "validation_states_observed": {
+    "unchecked": 115
+  },
+  "withheld_response_injections": 2,
+  "observer": {
+    "updates_did_not_mutate": true,
+    "explicit_adoption_preserved_canary": true,
+    "public_files_match_final_head": "52e8740918f7c6af286a3482e697dd259b33fc27",
+    "reconcile_matched_original_result": true,
+    "identical_helper_replay_matched": true,
+    "actual_adopt_calls": 1,
+    "operation_status_calls": 1,
+    "fresh_generation_after_recovery": 1,
+    "helper_replay_sent_no_duplicate_mutation": true
+  },
+  "mcp_sessions": 7,
+  "long_lived_mcp_sessions": 7,
+  "actual_mcp_tool_calls": 72,
+  "controller_requests_by_operation": {
+    "updates": 2,
+    "adopt": 2,
+    "reconcile": 2,
+    "status": 11,
+    "checkpoint": 15,
+    "publish": 6,
+    "resolution_tasks": 6,
+    "resolution_open": 6,
+    "resolution_submit": 6,
+    "init": 1,
+    "open": 4,
+    "integrate": 12
+  },
+  "all_mcp_sessions_strictly_sequenced": true,
+  "all_mcp_sessions_normal_eof_exit_zero": true,
+  "frozen_inputs_unchanged": true,
+  "coordinator_source_edits": false,
+  "limits": [
+    "New native model actors and a fresh six-feature synthetic task; not standalone Codex or Claude Code.",
+    "Controlled staging deliberately creates registry conflict and stale-resolution recovery; it is not an uncontrolled workload.",
+    "The fixed external oracle audits accepted heads after promotion. Engine checks remain empty, so semantic failures would not be prevented by the engine.",
+    "Response loss is deliberately injected after receipt at a harness seam and before durable journal completion; owned servers close by normal EOF.",
+    "No network, listener, kill, policy-command process, credential access, persistent grant or production code change by the campaign.",
+    "No matched performance comparison, throughput, saturation, optimal batching, arbitrary writer containment or production acceptance claim."
+  ],
+  "withheld_recoveries_verified": [
+    {
+      "actor": "observer",
+      "operation_id": "observer-adopt-final",
+      "operation": "adopt",
+      "actual_mutation_calls": 1,
+      "operation_status_calls": 1,
+      "recorded_request_binding_matches": true,
+      "reconciled_result_exactly_matches_withheld_result": true,
+      "duplicate_mutations": 0
+    },
+    {
+      "actor": "batching",
+      "operation_id": "batching-publish-split-20261018-1",
+      "operation": "publish",
+      "actual_mutation_calls": 1,
+      "operation_status_calls": 1,
+      "recorded_request_binding_matches": true,
+      "reconciled_result_exactly_matches_withheld_result": true,
+      "duplicate_mutations": 0
+    }
+  ],
+  "residual_findings": [
+    "Fresh resolution outer current_head versus historical nested task.current_head share a label",
+    "Legacy checks_pending true coexists with accurately unchecked validation under zero checks",
+    "Dirty-workspace next action can encourage checkpointing despite deliberate older-checkpoint publication",
+    "Controller-only tool-schema presentation omission"
+  ]
+}
