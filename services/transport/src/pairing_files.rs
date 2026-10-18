@@ -8,7 +8,7 @@
 //! PEMs: plaintext secrets rely on the verified OS access controls.
 use std::{
     io::{self, Read, Write},
-    path::{Component, Path},
+    path::{Component, Path, PathBuf},
 };
 
 fn denied(message: &'static str) -> io::Error {
@@ -21,6 +21,94 @@ fn clean_path(path: &Path) -> io::Result<()> {
             .any(|c| matches!(c, Component::CurDir | Component::ParentDir))
     {
         return Err(denied("absolute_clean_private_path_required"));
+    }
+    Ok(())
+}
+
+/// An anchored private directory for several related operations. On Windows the
+/// directory and every ancestor remain open without delete sharing. On Unix all
+/// file access is relative to the verified directory descriptor. Callers must
+/// synchronize mutable protocols separately; these methods never replace files.
+pub struct PrivateDirectory {
+    path: PathBuf,
+    handle: platform::Directory,
+}
+impl PrivateDirectory {
+    /// Create only the leaf if needed; reject unsafe existing directories.
+    pub fn open(path: &Path) -> io::Result<Self> {
+        Ok(Self {
+            path: path.to_owned(),
+            handle: platform::directory(path, true)?,
+        })
+    }
+    fn child(&self, name: &str) -> io::Result<PathBuf> {
+        let mut components = Path::new(name).components();
+        if !matches!(components.next(), Some(Component::Normal(_)))
+            || components.next().is_some()
+            || name.contains(['/', '\\', ':', '\0'])
+            || name.is_empty()
+        {
+            return Err(denied("private_child_requires_single_filename"));
+        }
+        #[cfg(windows)]
+        validate_windows_filename(std::ffi::OsStr::new(name))?;
+        Ok(self.path.join(name))
+    }
+    /// Bounded read of a checked regular single-link private file.
+    pub fn read(&self, name: &str, max_bytes: usize) -> io::Result<Vec<u8>> {
+        read_open_file(platform::read(&self.child(name)?, &self.handle)?, max_bytes)
+    }
+    /// Atomic create-only publication, including file and supported parent sync.
+    pub fn create(&self, name: &str, bytes: &[u8]) -> io::Result<()> {
+        create_in_parent(&self.child(name)?, &self.handle, bytes, |_| Ok(()))
+    }
+    /// Open a previously published private lock file read/write, never following
+    /// links or truncating it. The returned handle owns the OS lock lifetime.
+    pub fn open_lock(&self, name: &str) -> io::Result<std::fs::File> {
+        platform::read_write(&self.child(name)?, &self.handle)
+    }
+    #[cfg(test)]
+    pub(crate) fn create_fault(
+        &self,
+        name: &str,
+        bytes: &[u8],
+        point: PublishPoint,
+    ) -> io::Result<()> {
+        create_in_parent(&self.child(name)?, &self.handle, bytes, |current| {
+            if current == point {
+                Err(io::Error::other("synthetic_private_write_fault"))
+            } else {
+                Ok(())
+            }
+        })
+    }
+}
+
+#[cfg(any(windows, test))]
+fn validate_windows_filename(name: &std::ffi::OsStr) -> io::Result<()> {
+    let name = name.to_string_lossy();
+    let base = name
+        .split('.')
+        .next()
+        .unwrap_or("")
+        .trim_end_matches(' ')
+        .to_ascii_uppercase();
+    if name.ends_with(['.', ' '])
+        || name.chars().any(|c| c < ' ' || "<>:\"|?*".contains(c))
+        || matches!(
+            base.as_str(),
+            "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$"
+        )
+        || ["COM", "LPT"].iter().any(|prefix| {
+            base.strip_prefix(prefix).is_some_and(|tail| {
+                matches!(
+                    tail,
+                    "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "¹" | "²" | "³"
+                )
+            })
+        })
+    {
+        return Err(denied("private_files_reject_ambiguous_windows_filename"));
     }
     Ok(())
 }
@@ -52,17 +140,18 @@ pub fn create_private_file(path: &Path, bytes: &[u8]) -> io::Result<()> {
     create_with_hook(path, bytes, |_| Ok(()))
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum PublishPoint {
+pub(crate) enum PublishPoint {
     BeforeWrite,
+    AfterPartialWrite,
     AfterSync,
     BeforePublish,
+    AfterPublish,
 }
 fn create_with_hook(
     path: &Path,
     bytes: &[u8],
-    mut hook: impl FnMut(PublishPoint) -> io::Result<()>,
+    hook: impl FnMut(PublishPoint) -> io::Result<()>,
 ) -> io::Result<()> {
-    use ring::rand::{SecureRandom, SystemRandom};
     clean_path(path)?;
     if path.file_name().is_none() {
         return Err(denied("missing_private_filename"));
@@ -71,21 +160,37 @@ fn create_with_hook(
         .parent()
         .ok_or_else(|| denied("missing_private_parent"))?;
     let parent = platform::directory(parent_path, false)?;
+    create_in_parent(path, &parent, bytes, hook)
+}
+fn create_in_parent(
+    path: &Path,
+    parent: &platform::Directory,
+    bytes: &[u8],
+    mut hook: impl FnMut(PublishPoint) -> io::Result<()>,
+) -> io::Result<()> {
+    use ring::rand::{SecureRandom, SystemRandom};
+    let parent_path = path
+        .parent()
+        .ok_or_else(|| denied("missing_private_parent"))?;
     let mut random = [0u8; 32];
     SystemRandom::new()
         .fill(&mut random)
         .map_err(|_| denied("private_staging_random_source_failed"))?;
     let suffix: String = random.iter().map(|b| format!("{b:02x}")).collect();
     let staging = parent_path.join(format!(".pairing-stage-{suffix}"));
-    let mut file = platform::create(&staging, &parent)?;
+    let mut file = platform::create(&staging, parent)?;
     hook(PublishPoint::BeforeWrite)?;
-    file.write_all(bytes)?;
+    let midpoint = bytes.len() / 2;
+    file.write_all(&bytes[..midpoint])?;
+    hook(PublishPoint::AfterPartialWrite)?;
+    file.write_all(&bytes[midpoint..])?;
     file.sync_all()?;
     hook(PublishPoint::AfterSync)?;
     drop(file);
     hook(PublishPoint::BeforePublish)?;
-    platform::publish(&staging, path, &parent)?;
-    platform::sync_parent(&parent)
+    platform::publish(&staging, path, parent)?;
+    hook(PublishPoint::AfterPublish)?;
+    platform::sync_parent(parent)
 }
 /// Read at most `max_bytes`, checking the opened object rather than a pathname.
 pub fn read_private_file(path: &Path, max_bytes: usize) -> io::Result<Vec<u8>> {
@@ -95,7 +200,9 @@ pub fn read_private_file(path: &Path, max_bytes: usize) -> io::Result<Vec<u8>> {
             .ok_or_else(|| denied("missing_private_parent"))?,
         false,
     )?;
-    let file = platform::read(path, &parent)?;
+    read_open_file(platform::read(path, &parent)?, max_bytes)
+}
+fn read_open_file(file: std::fs::File, max_bytes: usize) -> io::Result<Vec<u8>> {
     if file.metadata()?.len() > max_bytes as u64 {
         return Err(denied("private_file_too_large"));
     }
@@ -199,6 +306,7 @@ mod platform {
         Ok(Directory(current))
     }
     pub(super) fn create(path: &Path, parent: &Directory) -> io::Result<File> {
+        verify(&parent.0, true)?;
         let name = name(Path::new(
             path.file_name()
                 .ok_or_else(|| denied("missing_private_filename"))?,
@@ -213,12 +321,23 @@ mod platform {
         Ok(file)
     }
     pub(super) fn read(path: &Path, parent: &Directory) -> io::Result<File> {
+        verify(&parent.0, true)?;
         let name = name(Path::new(
             path.file_name()
                 .ok_or_else(|| denied("missing_private_filename"))?,
         ))?;
         // NONBLOCK prevents a malicious FIFO/device from hanging before verification.
         let file = open_at(&parent.0, &name, libc::O_RDONLY | libc::O_NONBLOCK, 0)?;
+        verify(&file, false)?;
+        Ok(file)
+    }
+    pub(super) fn read_write(path: &Path, parent: &Directory) -> io::Result<File> {
+        verify(&parent.0, true)?;
+        let name = name(Path::new(
+            path.file_name()
+                .ok_or_else(|| denied("missing_private_filename"))?,
+        ))?;
+        let file = open_at(&parent.0, &name, libc::O_RDWR | libc::O_NONBLOCK, 0)?;
         verify(&file, false)?;
         Ok(file)
     }
@@ -413,15 +532,20 @@ mod platform {
             DRIVE_FIXED | DRIVE_REMOVABLE | DRIVE_RAMDISK => {}
             _ => return Err(denied("private_files_require_local_drive")),
         }
-        if path.components().any(|component| match component {
-            Component::Normal(name) => name.encode_wide().any(|c| c == b':' as u16),
-            _ => false,
-        }) {
-            return Err(denied("private_files_reject_alternate_data_streams"));
+        for component in path.components() {
+            if let Component::Normal(name) = component {
+                validate_windows_filename(name)?;
+            }
         }
         Ok(value.into_iter().chain(Some(0)).collect())
     }
-    fn open(path: &Path, directory: bool, create: bool, principal: &Principal) -> io::Result<File> {
+    fn open(
+        path: &Path,
+        directory: bool,
+        create: bool,
+        writable: bool,
+        principal: &Principal,
+    ) -> io::Result<File> {
         let path = wide(path)?;
         let descriptor = principal.descriptor(directory)?;
         let sa = SECURITY_ATTRIBUTES {
@@ -431,8 +555,8 @@ mod platform {
         };
         let access = if directory {
             FILE_READ_ATTRIBUTES | READ_CONTROL
-        } else if create {
-            GENERIC_WRITE | READ_CONTROL
+        } else if create || writable {
+            GENERIC_READ | GENERIC_WRITE | READ_CONTROL
         } else {
             GENERIC_READ | READ_CONTROL
         };
@@ -573,7 +697,7 @@ mod platform {
                     }
                 }
             }
-            let file = open(&cursor, true, false, &principal)?;
+            let file = open(&cursor, true, false, false, &principal)?;
             if last {
                 verify(&file, &principal)?;
                 leaf = Some(file);
@@ -589,14 +713,21 @@ mod platform {
     pub(super) fn create(path: &Path, parent: &Directory) -> io::Result<File> {
         let principal = Principal::current()?;
         verify(&parent.leaf, &principal)?;
-        let file = open(path, false, true, &principal)?;
+        let file = open(path, false, true, false, &principal)?;
         verify(&file, &principal)?;
         Ok(file)
     }
     pub(super) fn read(path: &Path, parent: &Directory) -> io::Result<File> {
         let principal = Principal::current()?;
         verify(&parent.leaf, &principal)?;
-        let file = open(path, false, false, &principal)?;
+        let file = open(path, false, false, false, &principal)?;
+        verify(&file, &principal)?;
+        Ok(file)
+    }
+    pub(super) fn read_write(path: &Path, parent: &Directory) -> io::Result<File> {
+        let principal = Principal::current()?;
+        verify(&parent.leaf, &principal)?;
+        let file = open(path, false, false, true, &principal)?;
         verify(&file, &principal)?;
         Ok(file)
     }
@@ -640,6 +771,9 @@ mod platform {
     pub(super) fn read(_: &Path, _: &Directory) -> io::Result<File> {
         Err(denied("private_files_unsupported_platform"))
     }
+    pub(super) fn read_write(_: &Path, _: &Directory) -> io::Result<File> {
+        Err(denied("private_files_unsupported_platform"))
+    }
     pub(super) fn publish(_: &Path, _: &Path, _: &Directory) -> io::Result<()> {
         Err(denied("private_files_unsupported_platform"))
     }
@@ -681,6 +815,90 @@ mod tests {
         assert!(validate_private_dir(&missing).is_err());
         assert!(!missing.exists());
         assert!(ensure_private_dir(Path::new("relative-private")).is_err());
+    }
+    #[test]
+    fn windows_filename_rules_reject_aliases_on_every_test_host() {
+        for name in [
+            "CON",
+            "NUL.json",
+            "COM1.data",
+            "LPT¹.txt",
+            "trailing.",
+            "space ",
+            "bad*name",
+            "file:stream",
+        ] {
+            assert!(
+                validate_windows_filename(std::ffi::OsStr::new(name)).is_err(),
+                "accepted {name}"
+            );
+        }
+        for name in [
+            "ordinary.json",
+            ".client-journal.lock",
+            "op-436f4e.completed.json",
+            "space within",
+        ] {
+            validate_windows_filename(std::ffi::OsStr::new(name)).unwrap();
+        }
+    }
+    #[test]
+    fn anchored_directory_rejects_unsafe_child_names_and_preserves_complete_publication() {
+        let (_root, path) = fixture();
+        let directory = PrivateDirectory::open(&path).unwrap();
+        for name in [
+            "",
+            ".",
+            "..",
+            "../outside",
+            "child/file",
+            "child\\file",
+            "file:stream",
+            "nul\0byte",
+        ] {
+            assert!(directory.create(name, b"synthetic").is_err());
+            assert!(directory.read(name, 64).is_err());
+            assert!(directory.open_lock(name).is_err());
+        }
+        assert!(directory
+            .create_fault(
+                "complete",
+                b"complete synthetic bytes",
+                PublishPoint::AfterPublish
+            )
+            .is_err());
+        assert_eq!(
+            directory.read("complete", 64).unwrap(),
+            b"complete synthetic bytes"
+        );
+        assert!(directory.create("complete", b"replacement").is_err());
+    }
+    #[cfg(unix)]
+    #[test]
+    fn anchored_directory_handles_survive_an_ancestor_rename() {
+        let (root, path) = fixture();
+        let directory = PrivateDirectory::open(&path).unwrap();
+        let moved = root.path().canonicalize().unwrap().join("moved");
+        std::fs::rename(&path, &moved).unwrap();
+        directory.create("anchored", b"exact").unwrap();
+        assert_eq!(directory.read("anchored", 16).unwrap(), b"exact");
+        assert_eq!(
+            read_private_file(&moved.join("anchored"), 16).unwrap(),
+            b"exact"
+        );
+        assert!(!path.exists());
+    }
+    #[cfg(unix)]
+    #[test]
+    fn anchored_directory_rechecks_private_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        let (_root, path) = fixture();
+        let directory = PrivateDirectory::open(&path).unwrap();
+        directory.create("file", b"exact").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(directory.read("file", 16).is_err());
+        assert!(directory.open_lock("file").is_err());
+        assert!(directory.create("new", b"exact").is_err());
     }
     #[cfg(unix)]
     #[test]
@@ -761,12 +979,28 @@ mod tests {
         let (_root, dir) = fixture();
         assert!(create_private_file(&dir.join("secret:alternate"), b"synthetic").is_err());
         assert!(validate_private_dir(Path::new(r"\\server\share\private")).is_err());
+        let directory = PrivateDirectory::open(&dir).unwrap();
+        for name in [
+            "CON",
+            "NUL.json",
+            "COM1.data",
+            "LPT¹.txt",
+            "trailing.",
+            "space ",
+            "bad*name",
+        ] {
+            assert!(
+                directory.create(name, b"synthetic").is_err(),
+                "accepted {name}"
+            );
+        }
     }
 
     #[test]
     fn failures_never_publish_partial_final_or_replace_existing() {
         for point in [
             PublishPoint::BeforeWrite,
+            PublishPoint::AfterPartialWrite,
             PublishPoint::AfterSync,
             PublishPoint::BeforePublish,
         ] {

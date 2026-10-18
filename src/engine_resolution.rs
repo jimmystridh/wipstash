@@ -532,7 +532,7 @@ pub(super) fn submit(state: &Path, db: &Connection, r: &Value) -> R<Value> {
     } else {
         "local_queued"
     };
-    let result = json!({"ok":true,"proposal":id,"resolution_of":proposal,"state":if online {"coordinator_accepted"} else {"queued_offline"},"commit":commit,"base":head,"observed_head":observed_head,"head_advanced":observed_head != head,"attempt":attempt,"checks_pending":true,"remote_contact_unverified":!online});
+    let result = json!({"ok":true,"proposal":id,"resolution_of":proposal,"state":if online {"coordinator_accepted"} else {"queued_offline"},"checkpoint":cp,"checkpoint_generation":cp_generation,"commit":commit,"base":head,"observed_head":observed_head,"head_advanced":observed_head != head,"attempt":attempt,"checks_pending":true,"remote_contact_unverified":!online});
     sql(db.execute_batch("BEGIN IMMEDIATE"))?;
     sql(db.execute("INSERT INTO proposals(id,workspace,checkpoint,commit_oid,base,intent,state) VALUES(?1,?2,?3,?4,?5,?6,?7)",params![id,owner,cp,commit,head,intent,phase]))?;
     sql(db.execute(

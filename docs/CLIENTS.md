@@ -62,8 +62,13 @@ operations, such as explicit integration and managed commands.
    at its own workspace. Merely registering MCP does not change its directory.
 2. Before checkpoint/adoption, stop every native tool, shell, editor and background
    writer that can change the workspace. MCP cannot intercept these writers.
-3. Read status for `generation`; pass it as `expected_generation` where required.
-   Give every mutation a fresh `operation_id`, retaining the exact request.
+3. Use workspace status for `generation` and the selected `checkpoint` ID, or
+   carry forward the generation returned by your last successful mutation when
+   no other writer can have changed the workspace. Pass it as
+   `expected_generation` where required. A checkpoint ID is not its Git commit
+   OID. Give each new mutation a fresh `operation_id`, retaining the exact request
+   before sending it. Do not silently refresh a rejected generation and retry a
+   mutation: inspect the changed state and deliberately prepare a new request.
 4. Checkpoint saves private WIP even if the source is broken. Publish only a
    deliberately selected checkpoint with an explicit intent, following caller
    authorization and client approval settings; this does not require a human
@@ -80,6 +85,128 @@ operations, such as explicit integration and managed commands.
    stopping surviving writers, `command_recover` through the generic tool requires
    `confirm_writers_stopped:true` plus workspace, operation ID and current generation.
    This is an operator assertion, not proof of process-tree containment.
+
+## Check evidence and compact state
+
+Checks remain optional: the default policy is `checks: []`. Private checkpoints
+can contain broken code. A successful publication or resolution submission means
+queue admission, not passing checks or successful integration. Configured required
+checks still gate promotion; this adapter never configures or runs new commands
+on the user's behalf merely because a response suggests a next action.
+
+Agent-facing responses expose a `validation` object with one of four states:
+
+- `unchecked`: no sufficient snapshot-bound passing check evidence is available.
+- `pending`: evaluation has not established an outcome for this queued candidate.
+- `passed`: recorded checks affirmatively passed for the indicated candidate;
+  this is not proof of arbitrary semantic correctness.
+- `failed`: recorded evaluation/check evidence reports failure.
+
+Read the evidence scope and candidate identity as well as the state. Current
+policy configuration and historical evidence are different facts. A sanitized
+remote receipt saying only `checks_executed` cannot establish `passed`.
+
+Run only project-authorized local checks, and stop immediately if one fails.
+Do not put a checkpoint/submission command after a test with an unconditional
+shell separator. Review the complete resolved diff, including preservation of
+already integrated behavior. Where authorized, configure required integration
+checks as the enforcement boundary; an agent's local test is advisory unless the
+project's policy actually gates promotion.
+
+Workspace status combines the current generation/checkpoint, existing resolution
+tasks and at most ten recent proposal summaries. Each summary includes validation
+and a structured `next_action`; `proposals_total`, `proposals_limit` and
+`proposals_truncated` make the preview boundary explicit. Query `proposal_status`
+for a specific older proposal or its complete diagnostics. This avoids fetching
+the same workspace/proposal state through several tools in the common case.
+
+Structured recovery and next-action fields are guidance, never authorization.
+`requires_explicit_request` means the server does not take the suggested action
+automatically; an already-authorized agent can issue the call without asking a
+human again. Publication and adoption remain separate explicit calls. Error responses retain
+their existing `error.code` and `error.message` and add recovery guidance where
+available. An operation-status replay is the original recorded response, not a
+fresh observation: re-read status when current state matters.
+
+For reliable client recovery, `operation_status` optionally accepts
+`include_record: true`. A found operation returns a `recorded: true` envelope
+with `state: "pending"` and `result: null`, or `state: "completed"` and the exact
+recorded result. Both include the original stored `request`; verify it matches
+your exact pending intent before accepting the result, since another caller may
+have used the same operation ID. The nested result can itself be a failed operation. An unknown
+ID returns `operation_not_found`; neither an unknown ID nor a pending result
+authorizes an automatic retry. Omitting this option preserves the original
+unwrapped response format.
+
+## Durable long-lived Python client
+
+`examples/clients/wipstash_client.py` provides a standard-library client for the
+built Wipstash executable. It negotiates initialization in order, discovers tools
+once per connection, and reuses that stdio connection. It runs a separate
+`wipstash client-journal ABSOLUTE_DIRECTORY` subprocess for the native private
+receipt store on Linux, macOS and Windows. No listener, persistent grant, editor
+interception or automatic integration is added.
+
+Put the journal outside source and all workspaces: exact requests and results
+may contain private information. Its parent must exist; use a canonical absolute
+path without symlink/reparse ancestors. The native store uses verified account
+permissions, exclusive ownership while locked, and create-only durable records.
+It refuses unsafe paths instead of repairing their permissions. On Windows it
+flushes file contents but does **not** promise directory-entry durability across
+power loss. Inspect `client.journal_durability` for the active guarantee.
+
+The client bounds incoming engine responses at 8 MiB, engine request frames at
+1 MiB, and escaped native-journal frames at 10 MiB. Journal string escaping can
+make a response exceed the journal limit even when it fits the engine-response
+limit. Oversized results fail closed and can leave the intent unresolved; they
+are never truncated and marked complete. The journal binds the server argv and
+working directory, so reopen it with the same endpoint configuration.
+
+```python
+from wipstash_client import WipstashClient, UncertainOperation
+
+with WipstashClient(
+    [binary, "--state", str(state), "mcp"],
+    journal_dir=str(journal),
+) as client:
+    status = client.read("status", workspace="alice")
+    if not status["ok"]:
+        raise RuntimeError(status)
+    save_id = client.new_operation_id("save")  # Retain this ID and request.
+    request = {"op": "checkpoint", "workspace": "alice",
+               "expected_generation": status["generation"],
+               "operation_id": save_id}
+    try:
+        saved = client.mutate(request)
+    except UncertainOperation:
+        saved = client.reconcile(save_id)  # May remain uncertain; never replay.
+    if not saved["ok"]:
+        raise RuntimeError(saved)
+    # Only an explicit, authorized publish call exports saved["checkpoint"].
+```
+
+Add the examples directory to your Python module path when importing. Generate a
+new ID for a new action, not each retry. `mutate` durably records the exact request
+before dispatch. The same ID with changed arguments rejects locally. A completed
+receipt returns its saved outcome; a pending receipt only queries
+`operation_status`, including after restarting the client. Neither an unknown
+operation nor an uncertain managed command is automatically rerun. Backend or
+transport failure can leave an uncertain outcome even if the caller saw no
+success; preserve the journal and reconcile before changing anything.
+
+`read` and `mutate` return engine `ok: false` results rather than raising for them.
+Check `ok` before dependent actions. An exited `command_run` also requires
+checking `execution.success`; this client does not turn a failed local check into
+an integration gate. `UncertainOperation` denotes an unresolved operation;
+`ProposalTimeout` denotes an expired bounded wait and retains its last status.
+
+`wait_for_proposal(proposal, timeout=60, initial_delay=0.25, max_delay=2)` uses a
+monotonic deadline and bounded backoff. It returns actionable dispositions such
+as quarantine as well as successful integration; inspect the result. It never
+integrates, resubmits, adopts or silently follows a replacement proposal.
+An ordinary read-only client can omit `journal_dir`; mutations require it.
+Operations without engine idempotency, such as `init` and `integrate`, remain
+outside `mutate` and require separate explicit caller orchestration.
 
 ## Evidence and release gates
 

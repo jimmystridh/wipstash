@@ -1,0 +1,852 @@
+{
+  "schema_version": 1,
+  "binary_sha256": "17f5b3870e01b77529f305b6a245f8095d9e936e52a53d13eb8cf384941ace89",
+  "platform": "Linux-6.18.55-x86_64-with-glibc2.41",
+  "actor_kind": "deterministic scripted personas",
+  "transport": "long-lived real stdio MCP; init/integrate use real CLI",
+  "required_checks_requested": false,
+  "runs": [
+    {
+      "mode": "repeated_reads",
+      "fixture_sha256": "30c95800c16327ada5a42d17d82f19b3c9e8f3949a3b7072ac26f790e1def152",
+      "actors": [
+        "A",
+        "B",
+        "C",
+        "D"
+      ],
+      "actor_kind": "deterministic scripted personas, not autonomous model agents",
+      "assertions": [
+        "unrelated proposal integrated past conflicting proposals; no automatic adoption",
+        "two concurrent submissions yielded one durable resolution; stale head rejected and explicitly reopened",
+        "stale-generation feedback includes current generation; terminal receipt replay costs no engine call",
+        "withheld completed response recovered after graceful session restart via operation_status, without mutation replay",
+        "explicit adoption preserved all compatible unsaved and excluded files; other owners unchanged"
+      ],
+      "observations": [
+        {
+          "phase": "queued",
+          "actor": "A",
+          "generation": 1,
+          "dirty": true,
+          "adopted_is_latest": true,
+          "checkpoint_present": true,
+          "proposals": [
+            {
+              "role": "A-original",
+              "state": "coordinator_accepted",
+              "validation": "unchecked",
+              "next_op": "proposal_status"
+            }
+          ],
+          "tasks": []
+        },
+        {
+          "phase": "queued",
+          "actor": "B",
+          "generation": 2,
+          "dirty": true,
+          "adopted_is_latest": true,
+          "checkpoint_present": true,
+          "proposals": [
+            {
+              "role": "B-original",
+              "state": "coordinator_accepted",
+              "validation": "unchecked",
+              "next_op": "proposal_status"
+            }
+          ],
+          "tasks": []
+        },
+        {
+          "phase": "queued",
+          "actor": "C",
+          "generation": 1,
+          "dirty": true,
+          "adopted_is_latest": true,
+          "checkpoint_present": true,
+          "proposals": [
+            {
+              "role": "C-original",
+              "state": "coordinator_accepted",
+              "validation": "unchecked",
+              "next_op": "proposal_status"
+            }
+          ],
+          "tasks": []
+        },
+        {
+          "phase": "queued",
+          "actor": "D",
+          "generation": 1,
+          "dirty": true,
+          "adopted_is_latest": true,
+          "checkpoint_present": true,
+          "proposals": [
+            {
+              "role": "D-original",
+              "state": "coordinator_accepted",
+              "validation": "unchecked",
+              "next_op": "proposal_status"
+            }
+          ],
+          "tasks": []
+        },
+        {
+          "phase": "initial_integration",
+          "actor": "A",
+          "generation": 1,
+          "dirty": true,
+          "adopted_is_latest": false,
+          "checkpoint_present": true,
+          "proposals": [
+            {
+              "role": "A-original",
+              "state": "integrated",
+              "validation": "unchecked",
+              "next_op": "updates"
+            }
+          ],
+          "tasks": []
+        },
+        {
+          "phase": "initial_integration",
+          "actor": "B",
+          "generation": 2,
+          "dirty": true,
+          "adopted_is_latest": false,
+          "checkpoint_present": true,
+          "proposals": [
+            {
+              "role": "B-original",
+              "state": "quarantined",
+              "validation": "unchecked",
+              "next_op": "resolution_open"
+            }
+          ],
+          "tasks": [
+            {
+              "role": "B-original",
+              "state": "action_required",
+              "reason": "merge_conflict",
+              "conflict_paths": [
+                "shared.txt"
+              ]
+            }
+          ]
+        },
+        {
+          "phase": "initial_integration",
+          "actor": "C",
+          "generation": 1,
+          "dirty": true,
+          "adopted_is_latest": false,
+          "checkpoint_present": true,
+          "proposals": [
+            {
+              "role": "C-original",
+              "state": "quarantined",
+              "validation": "unchecked",
+              "next_op": "resolution_open"
+            }
+          ],
+          "tasks": [
+            {
+              "role": "C-original",
+              "state": "action_required",
+              "reason": "merge_conflict",
+              "conflict_paths": [
+                "shared.txt"
+              ]
+            }
+          ]
+        },
+        {
+          "phase": "initial_integration",
+          "actor": "D",
+          "generation": 1,
+          "dirty": true,
+          "adopted_is_latest": false,
+          "checkpoint_present": true,
+          "proposals": [
+            {
+              "role": "D-original",
+              "state": "integrated",
+              "validation": "unchecked",
+              "next_op": "updates"
+            }
+          ],
+          "tasks": []
+        },
+        {
+          "phase": "competing_resolution",
+          "actor": "B",
+          "generation": 2,
+          "dirty": true,
+          "adopted_is_latest": false,
+          "checkpoint_present": true,
+          "proposals": [
+            {
+              "role": "B-original",
+              "state": "superseded",
+              "validation": "unchecked",
+              "next_op": null
+            },
+            {
+              "role": "B-resolution",
+              "state": "integrated",
+              "validation": "unchecked",
+              "next_op": "updates"
+            }
+          ],
+          "tasks": []
+        },
+        {
+          "phase": "stale_resolution",
+          "actor": "C",
+          "generation": 1,
+          "dirty": true,
+          "adopted_is_latest": false,
+          "checkpoint_present": true,
+          "proposals": [
+            {
+              "role": "C-original",
+              "state": "quarantined",
+              "validation": "unchecked",
+              "next_op": "resolution_open"
+            }
+          ],
+          "tasks": [
+            {
+              "role": "C-original",
+              "state": "action_required",
+              "reason": "merge_conflict",
+              "conflict_paths": [
+                "shared.txt"
+              ]
+            }
+          ]
+        },
+        {
+          "phase": "before_explicit_adopt",
+          "actor": "A",
+          "generation": 1,
+          "dirty": true,
+          "adopted_is_latest": false,
+          "checkpoint_present": true,
+          "proposals": [
+            {
+              "role": "A-original",
+              "state": "integrated",
+              "validation": "unchecked",
+              "next_op": "updates"
+            }
+          ],
+          "tasks": []
+        },
+        {
+          "phase": "before_explicit_adopt",
+          "actor": "B",
+          "generation": 2,
+          "dirty": true,
+          "adopted_is_latest": false,
+          "checkpoint_present": true,
+          "proposals": [
+            {
+              "role": "B-original",
+              "state": "superseded",
+              "validation": "unchecked",
+              "next_op": null
+            },
+            {
+              "role": "B-resolution",
+              "state": "integrated",
+              "validation": "unchecked",
+              "next_op": "updates"
+            }
+          ],
+          "tasks": []
+        },
+        {
+          "phase": "before_explicit_adopt",
+          "actor": "C",
+          "generation": 1,
+          "dirty": true,
+          "adopted_is_latest": false,
+          "checkpoint_present": true,
+          "proposals": [
+            {
+              "role": "C-original",
+              "state": "superseded",
+              "validation": "unchecked",
+              "next_op": null
+            },
+            {
+              "role": "C-resolution",
+              "state": "integrated",
+              "validation": "unchecked",
+              "next_op": "updates"
+            }
+          ],
+          "tasks": []
+        },
+        {
+          "phase": "before_explicit_adopt",
+          "actor": "D",
+          "generation": 2,
+          "dirty": false,
+          "adopted_is_latest": false,
+          "checkpoint_present": true,
+          "proposals": [
+            {
+              "role": "D-original",
+              "state": "integrated",
+              "validation": "unchecked",
+              "next_op": "updates"
+            }
+          ],
+          "tasks": []
+        },
+        {
+          "phase": "after_explicit_adopt",
+          "actor": "D",
+          "generation": 3,
+          "dirty": false,
+          "adopted_is_latest": true,
+          "checkpoint_present": false,
+          "proposals": [
+            {
+              "role": "D-original",
+              "state": "integrated",
+              "validation": "unchecked",
+              "next_op": "updates"
+            }
+          ],
+          "tasks": []
+        }
+      ],
+      "final_worktrees": {
+        "A": {
+          ".env": "0fe68339cd509bb1d1e0233869c0a600c24356582c376ecdf8356fed24e2b8d1",
+          "README.txt": "12cf8515f983ada9a05624d968add3d3915861b623d380c62ecc80c722035ec7",
+          "local/keep.txt": "a4e263b3ae1b2d6a78f680508ebd7f4beafff1aa8b699dd0649aa7b33ab6e38d",
+          "shared.txt": "06f961b802bc46ee168555f066d28f4f0e9afdf3f88174c1ee6f9de004fc30a0",
+          "unsaved-A.txt": "7f6c824103b59fbf5d8c9bfc59b779b433c2dfbb2aad233734262d760adc55df"
+        },
+        "B": {
+          ".env": "0b2bc8662073fd172d0a079be39bce155953cb6afb95db5d59dc88fa0fc394d7",
+          "README.txt": "12cf8515f983ada9a05624d968add3d3915861b623d380c62ecc80c722035ec7",
+          "local/keep.txt": "92cf1a5d8fbd31a88f59274f2239a44f38c607a70badd52ba6e0562896fcfbbf",
+          "shared.txt": "c0cde77fa8fef97d476c10aad3d2d54fcc2f336140d073651c2dcccf1e379fd6",
+          "unsaved-B.txt": "86380a0d788ba3fc28ab87e06237eff8da858205d4c61ff06487a18dd7db837e"
+        },
+        "C": {
+          ".env": "a417f36b054345e2a1aeac6304b0b2f28c796d4e0ddba0c7e81c626b5e281019",
+          "README.txt": "12cf8515f983ada9a05624d968add3d3915861b623d380c62ecc80c722035ec7",
+          "local/keep.txt": "e9ef3f490a6782fb3556d93359e59d21128d23957875cb10622272d0993c0d6e",
+          "shared.txt": "12f37a8a84034d3e623d726fe10e5031f4df997ac13f4d5571b5a90c41fb84fe",
+          "unsaved-C.txt": "a47658b66f21ac579d16884286900ebbdef3bd3fa9913b963637fba8221f65c4"
+        },
+        "D": {
+          ".env": "a127d956f625c638108f0bd9a305599e5290114fe1f3814071aba5fa181c54d4",
+          "README.txt": "12cf8515f983ada9a05624d968add3d3915861b623d380c62ecc80c722035ec7",
+          "local/keep.txt": "a5f79f2eb82fc1c9444839edab87d2f3b074569552cdcc8c76edb8fb162a9d90",
+          "progress.txt": "8562efa858daba478f63e9c06b9aaa201796f48ac478d920ce71ae33a2f4dcf7",
+          "shared.txt": "7eaa5d29c4ed9a9834b07df15deff74a5bc679f6ff2cc6cfe08a00a0591dd7ba",
+          "unsaved-D.txt": "94cd7b86d0354ad9fe83a3e9a05fea5d627e1672300172a8464971a38a106131"
+        }
+      },
+      "audit": {
+        "public_objects_audited_including_unreachable": 31,
+        "public_blobs_audited": 10,
+        "private_ancestor_absent": true,
+        "sqlite_integrity": "ok"
+      },
+      "required_checks": {
+        "state": "not_run",
+        "reason": "Required-check command execution is native-CI-only"
+      },
+      "competing_resolution": {
+        "accepted": 1,
+        "rejected": 1,
+        "accepted_workspace": "B-resolve-rival",
+        "rejection_code": "resolution_not_required"
+      },
+      "call_counts": {
+        "engine_requests_by_phase_transport_operation": {
+          "observation/mcp/proposal_status": 18,
+          "observation/mcp/resolution_tasks": 15,
+          "observation/mcp/status": 15,
+          "observation/mcp/updates": 15,
+          "recovery/mcp/checkpoint": 1,
+          "recovery/mcp/operation_status": 1,
+          "workflow/cli/init": 1,
+          "workflow/cli/integrate": 3,
+          "workflow/mcp/adopt": 1,
+          "workflow/mcp/checkpoint": 10,
+          "workflow/mcp/configure": 1,
+          "workflow/mcp/open": 4,
+          "workflow/mcp/publish": 4,
+          "workflow/mcp/resolution_open": 4,
+          "workflow/mcp/resolution_submit": 4,
+          "workflow/mcp/status": 1
+        },
+        "observation_engine_requests": 63,
+        "all_engine_requests": 98,
+        "structured_response_bytes_by_phase_transport": {
+          "workflow/cli": 10333,
+          "workflow/mcp": 36091,
+          "observation/mcp": 95368,
+          "recovery/mcp": 2141
+        },
+        "engine_requests_by_stdio_session": {
+          "A-session-1": 16,
+          "B-session-1": 25,
+          "C-session-1": 26,
+          "D-session-1": 13,
+          "B-rival-session-1": 3,
+          "D-session-2": 11
+        },
+        "mcp_lifecycle_requests_excluded": "initialize/tools-list/notifications are not engine requests"
+      },
+      "verified_graceful_eof_shutdowns": [
+        "D-session-1",
+        "A-session-1",
+        "B-session-1",
+        "C-session-1",
+        "B-rival-session-1",
+        "D-session-2"
+      ]
+    },
+    {
+      "mode": "compact_status",
+      "fixture_sha256": "30c95800c16327ada5a42d17d82f19b3c9e8f3949a3b7072ac26f790e1def152",
+      "actors": [
+        "A",
+        "B",
+        "C",
+        "D"
+      ],
+      "actor_kind": "deterministic scripted personas, not autonomous model agents",
+      "assertions": [
+        "unrelated proposal integrated past conflicting proposals; no automatic adoption",
+        "two concurrent submissions yielded one durable resolution; stale head rejected and explicitly reopened",
+        "stale-generation feedback includes current generation; terminal receipt replay costs no engine call",
+        "withheld completed response recovered after graceful session restart via operation_status, without mutation replay",
+        "explicit adoption preserved all compatible unsaved and excluded files; other owners unchanged"
+      ],
+      "observations": [
+        {
+          "phase": "queued",
+          "actor": "A",
+          "generation": 1,
+          "dirty": true,
+          "adopted_is_latest": true,
+          "checkpoint_present": true,
+          "proposals": [
+            {
+              "role": "A-original",
+              "state": "coordinator_accepted",
+              "validation": "unchecked",
+              "next_op": "proposal_status"
+            }
+          ],
+          "tasks": []
+        },
+        {
+          "phase": "queued",
+          "actor": "B",
+          "generation": 2,
+          "dirty": true,
+          "adopted_is_latest": true,
+          "checkpoint_present": true,
+          "proposals": [
+            {
+              "role": "B-original",
+              "state": "coordinator_accepted",
+              "validation": "unchecked",
+              "next_op": "proposal_status"
+            }
+          ],
+          "tasks": []
+        },
+        {
+          "phase": "queued",
+          "actor": "C",
+          "generation": 1,
+          "dirty": true,
+          "adopted_is_latest": true,
+          "checkpoint_present": true,
+          "proposals": [
+            {
+              "role": "C-original",
+              "state": "coordinator_accepted",
+              "validation": "unchecked",
+              "next_op": "proposal_status"
+            }
+          ],
+          "tasks": []
+        },
+        {
+          "phase": "queued",
+          "actor": "D",
+          "generation": 1,
+          "dirty": true,
+          "adopted_is_latest": true,
+          "checkpoint_present": true,
+          "proposals": [
+            {
+              "role": "D-original",
+              "state": "coordinator_accepted",
+              "validation": "unchecked",
+              "next_op": "proposal_status"
+            }
+          ],
+          "tasks": []
+        },
+        {
+          "phase": "initial_integration",
+          "actor": "A",
+          "generation": 1,
+          "dirty": true,
+          "adopted_is_latest": false,
+          "checkpoint_present": true,
+          "proposals": [
+            {
+              "role": "A-original",
+              "state": "integrated",
+              "validation": "unchecked",
+              "next_op": "updates"
+            }
+          ],
+          "tasks": []
+        },
+        {
+          "phase": "initial_integration",
+          "actor": "B",
+          "generation": 2,
+          "dirty": true,
+          "adopted_is_latest": false,
+          "checkpoint_present": true,
+          "proposals": [
+            {
+              "role": "B-original",
+              "state": "quarantined",
+              "validation": "unchecked",
+              "next_op": "resolution_open"
+            }
+          ],
+          "tasks": [
+            {
+              "role": "B-original",
+              "state": "action_required",
+              "reason": "merge_conflict",
+              "conflict_paths": [
+                "shared.txt"
+              ]
+            }
+          ]
+        },
+        {
+          "phase": "initial_integration",
+          "actor": "C",
+          "generation": 1,
+          "dirty": true,
+          "adopted_is_latest": false,
+          "checkpoint_present": true,
+          "proposals": [
+            {
+              "role": "C-original",
+              "state": "quarantined",
+              "validation": "unchecked",
+              "next_op": "resolution_open"
+            }
+          ],
+          "tasks": [
+            {
+              "role": "C-original",
+              "state": "action_required",
+              "reason": "merge_conflict",
+              "conflict_paths": [
+                "shared.txt"
+              ]
+            }
+          ]
+        },
+        {
+          "phase": "initial_integration",
+          "actor": "D",
+          "generation": 1,
+          "dirty": true,
+          "adopted_is_latest": false,
+          "checkpoint_present": true,
+          "proposals": [
+            {
+              "role": "D-original",
+              "state": "integrated",
+              "validation": "unchecked",
+              "next_op": "updates"
+            }
+          ],
+          "tasks": []
+        },
+        {
+          "phase": "competing_resolution",
+          "actor": "B",
+          "generation": 2,
+          "dirty": true,
+          "adopted_is_latest": false,
+          "checkpoint_present": true,
+          "proposals": [
+            {
+              "role": "B-original",
+              "state": "superseded",
+              "validation": "unchecked",
+              "next_op": null
+            },
+            {
+              "role": "B-resolution",
+              "state": "integrated",
+              "validation": "unchecked",
+              "next_op": "updates"
+            }
+          ],
+          "tasks": []
+        },
+        {
+          "phase": "stale_resolution",
+          "actor": "C",
+          "generation": 1,
+          "dirty": true,
+          "adopted_is_latest": false,
+          "checkpoint_present": true,
+          "proposals": [
+            {
+              "role": "C-original",
+              "state": "quarantined",
+              "validation": "unchecked",
+              "next_op": "resolution_open"
+            }
+          ],
+          "tasks": [
+            {
+              "role": "C-original",
+              "state": "action_required",
+              "reason": "merge_conflict",
+              "conflict_paths": [
+                "shared.txt"
+              ]
+            }
+          ]
+        },
+        {
+          "phase": "before_explicit_adopt",
+          "actor": "A",
+          "generation": 1,
+          "dirty": true,
+          "adopted_is_latest": false,
+          "checkpoint_present": true,
+          "proposals": [
+            {
+              "role": "A-original",
+              "state": "integrated",
+              "validation": "unchecked",
+              "next_op": "updates"
+            }
+          ],
+          "tasks": []
+        },
+        {
+          "phase": "before_explicit_adopt",
+          "actor": "B",
+          "generation": 2,
+          "dirty": true,
+          "adopted_is_latest": false,
+          "checkpoint_present": true,
+          "proposals": [
+            {
+              "role": "B-original",
+              "state": "superseded",
+              "validation": "unchecked",
+              "next_op": null
+            },
+            {
+              "role": "B-resolution",
+              "state": "integrated",
+              "validation": "unchecked",
+              "next_op": "updates"
+            }
+          ],
+          "tasks": []
+        },
+        {
+          "phase": "before_explicit_adopt",
+          "actor": "C",
+          "generation": 1,
+          "dirty": true,
+          "adopted_is_latest": false,
+          "checkpoint_present": true,
+          "proposals": [
+            {
+              "role": "C-original",
+              "state": "superseded",
+              "validation": "unchecked",
+              "next_op": null
+            },
+            {
+              "role": "C-resolution",
+              "state": "integrated",
+              "validation": "unchecked",
+              "next_op": "updates"
+            }
+          ],
+          "tasks": []
+        },
+        {
+          "phase": "before_explicit_adopt",
+          "actor": "D",
+          "generation": 2,
+          "dirty": false,
+          "adopted_is_latest": false,
+          "checkpoint_present": true,
+          "proposals": [
+            {
+              "role": "D-original",
+              "state": "integrated",
+              "validation": "unchecked",
+              "next_op": "updates"
+            }
+          ],
+          "tasks": []
+        },
+        {
+          "phase": "after_explicit_adopt",
+          "actor": "D",
+          "generation": 3,
+          "dirty": false,
+          "adopted_is_latest": true,
+          "checkpoint_present": false,
+          "proposals": [
+            {
+              "role": "D-original",
+              "state": "integrated",
+              "validation": "unchecked",
+              "next_op": "updates"
+            }
+          ],
+          "tasks": []
+        }
+      ],
+      "final_worktrees": {
+        "A": {
+          ".env": "0fe68339cd509bb1d1e0233869c0a600c24356582c376ecdf8356fed24e2b8d1",
+          "README.txt": "12cf8515f983ada9a05624d968add3d3915861b623d380c62ecc80c722035ec7",
+          "local/keep.txt": "a4e263b3ae1b2d6a78f680508ebd7f4beafff1aa8b699dd0649aa7b33ab6e38d",
+          "shared.txt": "06f961b802bc46ee168555f066d28f4f0e9afdf3f88174c1ee6f9de004fc30a0",
+          "unsaved-A.txt": "7f6c824103b59fbf5d8c9bfc59b779b433c2dfbb2aad233734262d760adc55df"
+        },
+        "B": {
+          ".env": "0b2bc8662073fd172d0a079be39bce155953cb6afb95db5d59dc88fa0fc394d7",
+          "README.txt": "12cf8515f983ada9a05624d968add3d3915861b623d380c62ecc80c722035ec7",
+          "local/keep.txt": "92cf1a5d8fbd31a88f59274f2239a44f38c607a70badd52ba6e0562896fcfbbf",
+          "shared.txt": "c0cde77fa8fef97d476c10aad3d2d54fcc2f336140d073651c2dcccf1e379fd6",
+          "unsaved-B.txt": "86380a0d788ba3fc28ab87e06237eff8da858205d4c61ff06487a18dd7db837e"
+        },
+        "C": {
+          ".env": "a417f36b054345e2a1aeac6304b0b2f28c796d4e0ddba0c7e81c626b5e281019",
+          "README.txt": "12cf8515f983ada9a05624d968add3d3915861b623d380c62ecc80c722035ec7",
+          "local/keep.txt": "e9ef3f490a6782fb3556d93359e59d21128d23957875cb10622272d0993c0d6e",
+          "shared.txt": "12f37a8a84034d3e623d726fe10e5031f4df997ac13f4d5571b5a90c41fb84fe",
+          "unsaved-C.txt": "a47658b66f21ac579d16884286900ebbdef3bd3fa9913b963637fba8221f65c4"
+        },
+        "D": {
+          ".env": "a127d956f625c638108f0bd9a305599e5290114fe1f3814071aba5fa181c54d4",
+          "README.txt": "12cf8515f983ada9a05624d968add3d3915861b623d380c62ecc80c722035ec7",
+          "local/keep.txt": "a5f79f2eb82fc1c9444839edab87d2f3b074569552cdcc8c76edb8fb162a9d90",
+          "progress.txt": "8562efa858daba478f63e9c06b9aaa201796f48ac478d920ce71ae33a2f4dcf7",
+          "shared.txt": "7eaa5d29c4ed9a9834b07df15deff74a5bc679f6ff2cc6cfe08a00a0591dd7ba",
+          "unsaved-D.txt": "94cd7b86d0354ad9fe83a3e9a05fea5d627e1672300172a8464971a38a106131"
+        }
+      },
+      "audit": {
+        "public_objects_audited_including_unreachable": 31,
+        "public_blobs_audited": 10,
+        "private_ancestor_absent": true,
+        "sqlite_integrity": "ok"
+      },
+      "required_checks": {
+        "state": "not_run",
+        "reason": "Required-check command execution is native-CI-only"
+      },
+      "competing_resolution": {
+        "accepted": 1,
+        "rejected": 1,
+        "accepted_workspace": "B-resolve-first",
+        "rejection_code": "resolution_not_required"
+      },
+      "call_counts": {
+        "engine_requests_by_phase_transport_operation": {
+          "observation/mcp/status": 15,
+          "recovery/mcp/checkpoint": 1,
+          "recovery/mcp/operation_status": 1,
+          "workflow/cli/init": 1,
+          "workflow/cli/integrate": 3,
+          "workflow/mcp/adopt": 1,
+          "workflow/mcp/checkpoint": 10,
+          "workflow/mcp/configure": 1,
+          "workflow/mcp/open": 4,
+          "workflow/mcp/publish": 4,
+          "workflow/mcp/resolution_open": 4,
+          "workflow/mcp/resolution_submit": 4,
+          "workflow/mcp/status": 1
+        },
+        "observation_engine_requests": 15,
+        "all_engine_requests": 50,
+        "structured_response_bytes_by_phase_transport": {
+          "workflow/cli": 10333,
+          "workflow/mcp": 36091,
+          "observation/mcp": 35015,
+          "recovery/mcp": 2141
+        },
+        "engine_requests_by_stdio_session": {
+          "A-session-1": 7,
+          "B-session-1": 11,
+          "C-session-1": 13,
+          "D-session-1": 7,
+          "B-rival-session-1": 3,
+          "D-session-2": 5
+        },
+        "mcp_lifecycle_requests_excluded": "initialize/tools-list/notifications are not engine requests"
+      },
+      "verified_graceful_eof_shutdowns": [
+        "D-session-1",
+        "A-session-1",
+        "B-session-1",
+        "C-session-1",
+        "B-rival-session-1",
+        "D-session-2"
+      ]
+    }
+  ],
+  "comparison": {
+    "same_revised_binary": true,
+    "identical_fixture": true,
+    "equivalent_observed_state": true,
+    "equivalent_final_worktrees": true,
+    "repeated_read_observation_calls": 63,
+    "compact_status_observation_calls": 15,
+    "observation_calls_saved": 48,
+    "observation_call_reduction_percent": 76.19,
+    "scope": "Identical scripted fixture; only the observation recipe differs. Baseline deliberately issues redundant reads against the same revised server.",
+    "not_established": [
+      "autonomous model success or reasoning quality",
+      "general agent productivity",
+      "latency or throughput improvement",
+      "pre-change server payload comparison",
+      "power-loss or pre-commit crash recovery",
+      "multi-host isolation"
+    ]
+  },
+  "state": "passed",
+  "elapsed_seconds_descriptive_only": 5.721
+}

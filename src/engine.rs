@@ -1,3 +1,5 @@
+#[path = "engine_feedback.rs"]
+mod feedback;
 #[path = "engine_resolution.rs"]
 mod resolution;
 #[path = "engine_sync.rs"]
@@ -84,11 +86,26 @@ fn event(db: &Connection, kind: &str, data: &Value) -> R<()> {
     Ok(())
 }
 fn finish(db: &Connection, id: &str, result: &Value) -> R<()> {
+    // Decorate before the transactional finish too, so crash recovery and a
+    // normal response persist the same advisory context at this generation.
+    let request: Option<String> = sql(db
+        .query_row("SELECT request FROM operations WHERE id=?1", [id], |r| {
+            r.get(0)
+        })
+        .optional())?;
+    let result = request
+        .and_then(|r| serde_json::from_str::<Value>(&r).ok())
+        .map(|r| feedback::complete(db, &r, result.clone()))
+        .unwrap_or_else(|| result.clone());
     sql(db.execute(
         "UPDATE operations SET result=?2 WHERE id=?1",
         params![id, result.to_string()],
     ))?;
     Ok(())
+}
+/// Structured, read-only recovery advice for failures before operation journaling.
+pub fn error_response(error: &str) -> Value {
+    feedback::error(error)
 }
 #[derive(Debug)]
 struct Workspace {
@@ -248,7 +265,9 @@ fn recover(state: &Path, db: &Connection, local_only: bool) -> R<()> {
             sql(db.execute_batch("BEGIN IMMEDIATE"))?;
             sql(db.execute("UPDATE promotions SET state='committed' WHERE id=?1", [&id]))?;
             sql(db.execute(
-                "UPDATE proposals SET state='integrated',head=?2 WHERE id=?1",
+                // A prior retry may have left evidence for another candidate.
+                // Recovery proves the public CAS, not which old details apply.
+                "UPDATE proposals SET state='integrated',head=?2,details=NULL WHERE id=?1",
                 params![p, new],
             ))?;
             event(
@@ -401,7 +420,7 @@ pub fn execute(state: &Path, r: Value) -> R<Value> {
         return sync::configure(state, &db, &r);
     }
     if op == "init" {
-        return initialize(state, &db, &r);
+        return initialize(state, &db, &r).map(|v| feedback::complete(&db, &r, v));
     }
     if sql(db
         .query_row("SELECT value FROM meta WHERE key='authority'", [], |row| {
@@ -506,14 +525,23 @@ pub fn execute(state: &Path, r: Value) -> R<Value> {
             )
         }
         "operation_status" => {
-            let result: Option<String> = sql(db.query_row(
-                "SELECT result FROM operations WHERE id=?1",
+            if r.get("include_record").is_some_and(|v| !v.is_boolean()) {
+                return Err("invalid_request: include_record must be boolean".into());
+            }
+            let record: Option<(String, Option<String>)> = sql(db.query_row(
+                "SELECT request,result FROM operations WHERE id=?1",
                 [field(&r, "operation_id")?],
-                |r| r.get(0),
-            ))?;
-            Ok(match result {
-                Some(v) => serde_json::from_str(&v).map_err(|e| e.to_string())?,
-                None => json!({"ok":true,"state":"pending"}),
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            ).optional())?;
+            let (request, result) = record.ok_or("operation_not_found: no journaled operation has this ID")?;
+            let result = result
+                .map(|v|serde_json::from_str::<Value>(&v).map_err(|e|e.to_string())).transpose()?;
+            Ok(if r["include_record"] == true {
+                let request: Value = serde_json::from_str(&request).map_err(|e| e.to_string())?;
+                json!({"ok":true,"operation_id":r["operation_id"],"request":request,"recorded":true,
+                    "state":if result.is_some(){"completed"}else{"pending"},"result":result})
+            } else {
+                result.unwrap_or_else(||json!({"ok":true,"state":"pending"}))
             })
         }
         "proposal_status" => proposal_status(&db, field(&r, "proposal")?),
@@ -555,7 +583,7 @@ pub fn execute(state: &Path, r: Value) -> R<Value> {
         "backup_status" => crate::backup::status(&db),
         "backup_flush" => crate::backup::flush(state, &db, Path::new(field(&r, "destination")?)),
         _ => Err("unsupported_operation".into()),
-    });
+    }).map(|value| feedback::complete(&db, &r, value));
     sqlite_phase(diagnostic_start, "dispatch_complete");
     match (id, result) {
         (Some(id), Ok(value)) => {
@@ -563,8 +591,7 @@ pub fn execute(state: &Path, r: Value) -> R<Value> {
             Ok(value)
         }
         (Some(id), Err(error)) => {
-            let code = error.split(':').next().unwrap_or("internal_error");
-            let value = json!({"ok":false,"error":{"code":code,"message":error}});
+            let value = feedback::complete(&db, &r, error_response(&error));
             finish(&db, id, &value)?;
             Ok(value)
         }
@@ -679,10 +706,10 @@ fn publish(state: &Path, db: &Connection, r: &Value) -> R<Value> {
     let _ = ws(db, wid)?;
     let cp = field(r, "checkpoint")?;
     let id = field(r, "operation_id")?;
-    let (tree, base): (String, String) = sql(db.query_row(
-        "SELECT tree,base FROM checkpoints WHERE id=?1 AND workspace=?2",
+    let (tree, base, cp_generation): (String, String, i64) = sql(db.query_row(
+        "SELECT tree,base,generation FROM checkpoints WHERE id=?1 AND workspace=?2",
         params![cp, wid],
-        |r| Ok((r.get(0)?, r.get(1)?)),
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
     ))
     .map_err(|_| "checkpoint_not_found".to_string())?;
     let intent = field(r, "intent")?;
@@ -711,7 +738,7 @@ fn publish(state: &Path, db: &Connection, r: &Value) -> R<Value> {
     } else {
         "local_queued"
     };
-    let result = json!({"ok":true,"state":if online{"coordinator_accepted"}else{"queued_offline"},"proposal":id,"commit":commit,"base":base,"durability":if online{"coordinator_saved"}else{"local_saved"},"replication":"not_configured"});
+    let result = json!({"ok":true,"state":if online{"coordinator_accepted"}else{"queued_offline"},"proposal":id,"checkpoint":cp,"checkpoint_generation":cp_generation,"commit":commit,"base":base,"durability":if online{"coordinator_saved"}else{"local_saved"},"replication":"not_configured"});
     sql(db.execute_batch("BEGIN IMMEDIATE"))?;
     sql(db.execute("INSERT OR IGNORE INTO proposals(id,workspace,checkpoint,commit_oid,base,intent,state) VALUES(?1,?2,?3,?4,?5,?6,?7)",params![id,wid,cp,commit,base,intent,phase]))?;
     finish(db, id, &result)?;
@@ -814,19 +841,23 @@ fn integrate(state: &Path, db: &Connection, r: &Value) -> R<Value> {
                 "quarantined",
                 &json!({"proposal":id,"resolution_task":task}),
             )?;
-            outcomes.push(json!({"proposal":id,"state":"quarantined","reason":"conflict_or_policy_rejection","details":evaluation.details,"resolution_task":task}));
+            outcomes.push(json!({"proposal":id,"state":"quarantined","reason":"conflict_or_policy_rejection","details":evaluation.details,"resolution_task":task,
+                "validation":feedback::validation(Some(&evaluation.details),"quarantined",feedback::policy_counts(db).0,Some(&p),false),
+                "next_action":feedback::proposal_action_for_store(db,&id,"quarantined",task.as_ref())}));
             continue;
         }
         if merge.tree == git.tree(&head)? {
             sql(db.execute(
-                "UPDATE proposals SET state='already_included',head=?2 WHERE id=?1",
-                params![id, head],
+                "UPDATE proposals SET state='already_included',head=?2,details=?3 WHERE id=?1",
+                params![id, head, evaluation.details.to_string()],
             ))?;
             event(db, "already_included", &json!({"proposal":id,"head":head}))?;
-            outcomes.push(json!({"proposal":id,"state":"already_included","head":head,"evidence":"unchecked"}));
+            outcomes.push(json!({"proposal":id,"state":"already_included","head":head,"evidence":"unchecked",
+                "validation":feedback::validation(Some(&evaluation.details),"already_included",feedback::policy_counts(db).0,Some(&p),false),
+                "next_action":feedback::proposal_action_for_store(db,&id,"already_included",None)}));
             continue;
         }
-        let commit=git.commit(&merge.tree,&[head.clone(),p],&format!("Wipstash integration\noperation: integration-{id}\nproposal: {id}\nevidence: {evidence}"))?;
+        let commit=git.commit(&merge.tree,&[head.clone(),p.clone()],&format!("Wipstash integration\noperation: integration-{id}\nproposal: {id}\nevidence: {evidence}"))?;
         git.set_ref(&format!("refs/wipstash/candidates/{id}"), &commit, None)?;
         sql(db.execute(
             "INSERT INTO promotions(id,proposal,old,new,state) VALUES(?1,?2,?3,?4,'intent')",
@@ -850,7 +881,9 @@ fn integrate(state: &Path, db: &Connection, r: &Value) -> R<Value> {
             &json!({"proposal":id,"head":commit,"evidence":evidence}),
         )?;
         sql(db.execute_batch("COMMIT"))?;
-        outcomes.push(json!({"proposal":id,"state":"integrated","head":commit,"evidence":evidence,"repaired":evaluation.repaired}));
+        outcomes.push(json!({"proposal":id,"state":"integrated","head":commit,"evidence":evidence,"repaired":evaluation.repaired,
+            "validation":feedback::validation(Some(&evaluation.details),"integrated",feedback::policy_counts(db).0,Some(&p),false),
+            "next_action":feedback::proposal_action_for_store(db,&id,"integrated",None)}));
     }
     Ok(json!({"ok":true,"head":git.head(HEAD)?,"outcomes":outcomes,"evidence":"unchecked"}))
 }
@@ -966,9 +999,44 @@ fn status(state: &Path, db: &Connection, r: &Value) -> R<Value> {
             let saved = git.tree(w.checkpoint.as_deref().unwrap_or(&w.base))?;
             Some(tree != saved)
         };
-        Ok(
-            json!({"ok":true,"workspace":wid,"path":w.path,"adopted":w.base,"latest":head,"cached_head":git.head(HEAD).ok(),"coordinator_online":head.is_some() && !sync::is_client(db)?,"remote_contact_unverified":sync::is_client(db)?,"public_store_role":if sync::is_client(db)?{"client_cache"}else{"authority"},"checkpoint_commit":w.checkpoint,"generation":w.generation,"dirty":dirty,"replication":"not_configured","profile":"cooperative-local","writer_recovery_required":fenced,"resolution_tasks":resolution::tasks(db,r)?["tasks"]}),
-        )
+        let tasks = resolution::tasks(db, r)?["tasks"].clone();
+        let summaries = recent_proposals(db, wid)?;
+        let next = if fenced {
+            feedback::action(Some("status"),"Stop and verify unmanaged writers before explicitly acknowledging command_recover.",json!({"workspace":wid}))
+        } else if let Some(task) = tasks.as_array().and_then(|a| a.first()) {
+            let mut action = feedback::proposal_action_for_store(
+                db,
+                task["proposal"].as_str().unwrap_or(""),
+                "quarantined",
+                Some(task),
+            );
+            action["arguments"]["workspace"] = json!(wid);
+            action
+        } else if dirty == Some(true) {
+            feedback::action(Some("checkpoint"),"Private changes are not checkpointed. Capture them explicitly before selecting a checkpoint for publication.",json!({"workspace":wid,"expected_generation":w.generation}))
+        } else if let Some(p) = summaries["proposals"].as_array().and_then(|a| {
+            a.iter().find(|p| {
+                matches!(
+                    p["state"].as_str(),
+                    Some("local_queued" | "coordinator_accepted" | "queued_offline")
+                )
+            })
+        }) {
+            p["next_action"].clone()
+        } else if head.as_ref().is_some_and(|h| h != &w.base) {
+            feedback::action(Some("updates"),"Public updates are available. Read them before explicitly deciding whether to adopt.",json!({"workspace":wid}))
+        } else {
+            feedback::action(
+                None,
+                "Review the recent proposal summary before choosing the next explicit action; older proposals may be truncated.",
+                json!({}),
+            )
+        };
+        let mut result = json!({"ok":true,"workspace":wid,"path":w.path,"adopted":w.base,"latest":head,"cached_head":git.head(HEAD).ok(),"coordinator_online":head.is_some() && !sync::is_client(db)?,"remote_contact_unverified":sync::is_client(db)?,"public_store_role":if sync::is_client(db)?{"client_cache"}else{"authority"},"checkpoint_commit":w.checkpoint,"generation":w.generation,"dirty":dirty,"replication":"not_configured","profile":"cooperative-local","writer_recovery_required":fenced,"resolution_tasks":tasks,"next_action":next});
+        for (key, value) in summaries.as_object().unwrap() {
+            result[key] = value.clone();
+        }
+        Ok(result)
     } else {
         let count: i64 = sql(db.query_row("SELECT COUNT(*) FROM workspaces", [], |r| r.get(0)))?;
         Ok(
@@ -976,13 +1044,46 @@ fn status(state: &Path, db: &Connection, r: &Value) -> R<Value> {
         )
     }
 }
+fn recent_proposals(db: &Connection, wid: &str) -> R<Value> {
+    let total: i64 = sql(db.query_row(
+        "SELECT COUNT(*) FROM proposals WHERE workspace=?1",
+        [wid],
+        |r| r.get(0),
+    ))?;
+    let mut statement = sql(
+        db.prepare("SELECT id FROM proposals WHERE workspace=?1 ORDER BY rowid DESC LIMIT ?2")
+    )?;
+    let ids = sql(
+        statement.query_map(params![wid, feedback::PROPOSAL_LIMIT], |r| {
+            r.get::<_, String>(0)
+        }),
+    )?
+    .collect::<rusqlite::Result<Vec<_>>>()
+    .map_err(|e| e.to_string())?;
+    let mut proposals = Vec::with_capacity(ids.len());
+    for id in ids {
+        let p = proposal_status(db, &id)?;
+        proposals.push(json!({"proposal":id,"state":p["state"],"commit":p["commit"],"head":p["head"],
+            "validation":p["validation"],"next_action":p["next_action"],
+            "resolution_required":p["resolution_task"].is_object(),"remote_observation":p["remote_observation"].is_object()}));
+    }
+    Ok(
+        json!({"proposals":proposals,"proposals_total":total,"proposals_limit":feedback::PROPOSAL_LIMIT,
+        "proposals_truncated":total > feedback::PROPOSAL_LIMIT}),
+    )
+}
 fn proposal_status(db: &Connection, id: &str) -> R<Value> {
-    let (state, commit, head, details): (String, String, Option<String>, Option<String>) = sql(db
-        .query_row(
-            "SELECT state,commit_oid,head,details FROM proposals WHERE id=?1",
-            [id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
-        ))?;
+    let (state, commit, head, details, workspace): (
+        String,
+        String,
+        Option<String>,
+        Option<String>,
+        String,
+    ) = sql(db.query_row(
+        "SELECT state,commit_oid,head,details,workspace FROM proposals WHERE id=?1",
+        [id],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+    ))?;
     let detail: Option<Value> = details.and_then(|d| serde_json::from_str(&d).ok());
     let evidence = match detail.as_ref() {
         Some(d)
@@ -1001,13 +1102,25 @@ fn proposal_status(db: &Connection, id: &str) -> R<Value> {
         Some(d) if d["repaired"] == true => "agent_resolved_unchecked",
         _ => "unchecked",
     };
+    let task = resolution::task(db, id)?;
+    let next = |phase: &str| {
+        let mut action = feedback::proposal_action_for_store(db, id, phase, task.as_ref());
+        if matches!(action["op"].as_str(), Some("resolution_open" | "updates")) {
+            action["arguments"]["workspace"] = json!(workspace);
+        }
+        action
+    };
     if let Some(observed) = sync::observed_status(db, id)? {
         return Ok(
-            json!({"ok":true,"proposal":id,"state":observed["state"],"local_state":state,"commit":commit,"head":observed["integration_head"],"evidence":observed["evidence"],"remote_observation":observed,"details":null,"resolution_task":resolution::task(db,id)?}),
+            json!({"ok":true,"proposal":id,"state":observed["state"],"local_state":state,"commit":commit,"head":observed["integration_head"],"evidence":observed["evidence"],"remote_observation":observed,"details":null,"resolution_task":task,
+                "validation":feedback::validation(None,observed["state"].as_str().unwrap_or(""),None,Some(&commit),true),
+                "next_action":next(observed["state"].as_str().unwrap_or(""))}),
         );
     }
     Ok(
-        json!({"ok":true,"proposal":id,"state":state,"commit":commit,"head":head,"details":detail,"evidence":evidence,"origin":sync::proposal_origin(db,id)?,"resolution_task":resolution::task(db,id)?,"resolution":resolution::lineage(db,id)?}),
+        json!({"ok":true,"proposal":id,"state":state,"commit":commit,"head":head,"details":detail,"evidence":evidence,"origin":sync::proposal_origin(db,id)?,"resolution_task":task,"resolution":resolution::lineage(db,id)?,
+            "validation":feedback::validation(detail.as_ref(),&state,feedback::policy_counts(db).0,Some(&commit),false),
+            "next_action":next(&state)}),
     )
 }
 fn events(db: &Connection, cursor: i64) -> R<Value> {
@@ -1278,6 +1391,187 @@ mod regression_tests {
                 b"original"
             );
         }
+    }
+
+    #[test]
+    fn feedback_checkpoint_and_error_replays_preserve_the_original_observation() {
+        let p = Project::new();
+        let first = json!({"op":"checkpoint","workspace":"A","expected_generation":0,"operation_id":"feedback-cp"});
+        let saved = p.request(first.clone());
+        assert_eq!(saved["checkpoint"], "feedback-cp");
+        assert_eq!(saved["checkpoint_generation"], 1);
+        assert_eq!(saved["current_generation"], 1);
+        assert_eq!(saved["validation"]["state"], "unchecked");
+        assert_eq!(saved["validation"]["scope"], "private_checkpoint");
+        p.request(json!({"op":"checkpoint","workspace":"A","expected_generation":1,"operation_id":"feedback-cp-2"}));
+        assert_eq!(p.request(first), saved);
+        assert_eq!(
+            p.request(json!({"op":"operation_status","operation_id":"feedback-cp"})),
+            saved
+        );
+        let stale = json!({"op":"checkpoint","workspace":"A","expected_generation":0,"operation_id":"feedback-stale"});
+        let failed = execute(&p.0.join("state"), stale.clone()).unwrap();
+        assert_eq!(failed["error"]["code"], "generation_mismatch");
+        assert_eq!(failed["current_generation"], 2);
+        assert_eq!(failed["current_generation_workspace"], "A");
+        assert_eq!(failed["checkpoint"], "feedback-cp-2");
+        assert_eq!(failed["next_action"]["arguments"]["workspace"], "A");
+        p.request(json!({"op":"checkpoint","workspace":"A","expected_generation":2,"operation_id":"feedback-cp-3"}));
+        assert_eq!(execute(&p.0.join("state"), stale).unwrap(), failed);
+        assert_eq!(
+            execute(
+                &p.0.join("state"),
+                json!({"op":"operation_status","operation_id":"feedback-stale"})
+            )
+            .unwrap(),
+            failed
+        );
+        let record = p.request(
+            json!({"op":"operation_status","operation_id":"feedback-stale","include_record":true}),
+        );
+        assert_eq!(record["recorded"], true);
+        assert_eq!(record["state"], "completed");
+        assert_eq!(record["result"], failed);
+        assert_eq!(
+            record["request"],
+            json!({"op":"checkpoint","workspace":"A","expected_generation":0,"operation_id":"feedback-stale"})
+        );
+        assert!(execute(
+            &p.0.join("state"),
+            json!({"op":"operation_status","operation_id":"unknown"})
+        )
+        .unwrap_err()
+        .starts_with("operation_not_found:"));
+        assert!(execute(
+            &p.0.join("state"),
+            json!({"op":"operation_status","operation_id":"feedback-cp","include_record":"true"})
+        )
+        .unwrap_err()
+        .starts_with("invalid_request:"));
+        let db = Connection::open(p.0.join("state/state.sqlite")).unwrap();
+        db.execute("INSERT INTO operations VALUES('feedback-pending','digest','{\"op\":\"checkpoint\"}',NULL)",[]).unwrap();
+        assert_eq!(
+            p.request(json!({"op":"operation_status","operation_id":"feedback-pending"})),
+            json!({"ok":true,"state":"pending"})
+        );
+        let pending = p.request(json!({"op":"operation_status","operation_id":"feedback-pending","include_record":true}));
+        assert_eq!(pending["state"], "pending");
+        assert_eq!(pending["result"], Value::Null);
+        assert_eq!(pending["request"], json!({"op":"checkpoint"}));
+    }
+
+    #[test]
+    fn feedback_status_is_bounded_and_preserves_selected_checkpoint_identity() {
+        let p = Project::new();
+        let initial = p.request(json!({"op":"status","workspace":"A"}));
+        assert_eq!(initial["checkpoint"], Value::Null);
+        assert_eq!(initial["checks_configured"], 0);
+        assert_eq!(initial["required_checks_configured"], 0);
+        p.request(json!({"op":"checkpoint","workspace":"A","expected_generation":0,"operation_id":"feedback-selected"}));
+        p.request(json!({"op":"checkpoint","workspace":"A","expected_generation":1,"operation_id":"feedback-latest"}));
+        for i in 0..12 {
+            let published = p.request(json!({"op":"publish","workspace":"A","checkpoint":"feedback-selected","intent":"synthetic bounded summary","operation_id":format!("feedback-pub-{i}")}));
+            assert_eq!(published["checkpoint"], "feedback-selected");
+            assert_eq!(published["checkpoint_generation"], 1);
+            assert_eq!(published["current_generation"], 2);
+            assert_eq!(published["validation"]["state"], "unchecked");
+        }
+        let status = p.request(json!({"op":"status","workspace":"A"}));
+        assert_eq!(status["checkpoint"], "feedback-latest");
+        assert_eq!(status["checkpoint_generation"], 2);
+        assert_eq!(status["proposals_total"], 12);
+        assert_eq!(status["proposals_limit"], 10);
+        assert_eq!(status["proposals_truncated"], true);
+        let summaries = status["proposals"].as_array().unwrap();
+        assert_eq!(summaries.len(), 10);
+        assert_eq!(summaries[0]["proposal"], "feedback-pub-11");
+        assert_eq!(summaries[9]["proposal"], "feedback-pub-2");
+        assert!(summaries.iter().all(|s| s.get("details").is_none()));
+        assert_eq!(
+            p.request(json!({"op":"status","workspace":"B"}))["proposals_total"],
+            0
+        );
+        // Configuration alone is safe: no integrate, command_run, or policy
+        // runner occurs after this deliberately nonexistent check is configured.
+        p.request(json!({"op":"configure","operation_id":"feedback-configure","policy":{"checks":[{"id":"never-executed","argv":["never-executed"],"required":false}]}}));
+        let pending = p.request(json!({"op":"proposal_status","proposal":"feedback-pub-11"}));
+        assert_eq!(pending["validation"]["state"], "pending");
+        assert_eq!(pending["checks_configured"], 1);
+        assert_eq!(pending["required_checks_configured"], 0);
+    }
+
+    #[test]
+    fn feedback_resolution_failure_reports_isolated_generation_and_prioritizes_task() {
+        let p = Project::new();
+        let opened = fixed_resolution(&p);
+        let db = Connection::open(p.0.join("state/state.sqlite")).unwrap();
+        db.execute("UPDATE workspaces SET generation=7 WHERE id='fix'", [])
+            .unwrap();
+        let mut request = resolution_request(&opened, "feedback-stale-resolution");
+        request["expected_head"] = json!("0".repeat(40));
+        let result = execute(&p.0.join("state"), request).unwrap();
+        assert_eq!(result["current_generation"], 7);
+        assert_eq!(result["current_generation_workspace"], "fix");
+        assert_eq!(result["error"]["code"], "stale_resolution");
+        assert_eq!(result["next_action"]["arguments"]["workspace"], "B");
+        fs::write(p.0.join("B/private-unpublished"), "private WIP").unwrap();
+        let status = p.request(json!({"op":"status","workspace":"B"}));
+        assert_eq!(status["dirty"], true);
+        assert_eq!(status["next_action"]["op"], "resolution_open");
+        assert_eq!(status["next_action"]["arguments"]["workspace"], "B");
+        assert!(status["resolution_tasks"][0]["next_action"].is_string());
+        assert_eq!(
+            status["resolution_tasks"][0]["next_action_hint"]["op"],
+            "resolution_open"
+        );
+        // Wire tasks remain untouched by local-only feedback decoration.
+        let task = resolution::task(&db, "conflict-pub-B").unwrap().unwrap();
+        assert!(task.get("next_action_hint").is_none());
+        assert!(task.get("validation").is_none());
+    }
+
+    #[test]
+    fn feedback_recovered_promotion_does_not_reuse_prior_candidate_validation() {
+        let p = Project::new();
+        fs::write(p.0.join("A/a"), "new public candidate").unwrap();
+        p.request(json!({"op":"checkpoint","workspace":"A","expected_generation":0,"operation_id":"feedback-recovery-cp"}));
+        let proposal = p.request(json!({"op":"publish","workspace":"A","checkpoint":"feedback-recovery-cp","intent":"synthetic promotion recovery","operation_id":"feedback-recovery-pub"}));
+        let state = p.0.join("state");
+        let git = coordinator(&state);
+        let old = git.head(HEAD).unwrap();
+        let commit = proposal["commit"].as_str().unwrap();
+        let tree = git.tree(commit).unwrap();
+        let new = git
+            .commit(
+                &tree,
+                &[old.clone(), commit.into()],
+                "synthetic interrupted integration",
+            )
+            .unwrap();
+        let db = Connection::open(state.join("state.sqlite")).unwrap();
+        let obsolete = json!({"proposal":commit,"candidate_tree":"obsolete","accepted":true,
+            "policy":{"checks":[{"id":"old"}]},"checks":[{"id":"old","success":true,"checkout_unchanged":true,"candidate_tree":"obsolete"}]});
+        db.execute(
+            "UPDATE proposals SET details=?1 WHERE id='feedback-recovery-pub'",
+            [obsolete.to_string()],
+        )
+        .unwrap();
+        db.execute("INSERT INTO promotions VALUES('feedback-recovery','feedback-recovery-pub',?1,?2,'intent')",params![old,new]).unwrap();
+        git.set_ref(HEAD, &new, Some(&old)).unwrap();
+        // Safe synthetic journal state: no command, fault hook, or runner starts.
+        db.execute(
+            "INSERT INTO meta VALUES('policy',?1)",
+            [json!({"checks":[{"id":"never-executed","argv":["never-executed"]}]}).to_string()],
+        )
+        .unwrap();
+        let recovered =
+            p.request(json!({"op":"proposal_status","proposal":"feedback-recovery-pub"}));
+        assert_eq!(recovered["state"], "integrated");
+        assert_eq!(recovered["head"], new);
+        assert_eq!(recovered["details"], Value::Null);
+        assert_eq!(recovered["validation"]["state"], "unchecked");
+        assert_eq!(recovered["checks_configured"], 1);
+        assert_eq!(fs::read_to_string(p.0.join("B/a")).unwrap(), "original");
     }
 
     #[test]

@@ -14,16 +14,60 @@ struct Session {
 fn error(id: Value, code: i64, message: &str) -> Value {
     json!({"jsonrpc":"2.0","id":id,"error":{"code":code,"message":message}})
 }
+fn output_schema() -> Value {
+    // Operations retain their own additive result fields. In particular, an
+    // operation-status replay is the original outcome, not today's state.
+    json!({"type":"object","properties":{
+        "ok":{"type":"boolean"},
+        "validation":{"type":"object","description":"Snapshot-bound check evidence; passed never claims semantic correctness. Absence of checks is unchecked, not passed.","properties":{"state":{"enum":["unchecked","pending","passed","failed"]},"semantic_correctness_claimed":{"const":false}},"required":["state"]},
+        "generation":{"type":"integer","minimum":0},
+        "current_generation":{"type":"integer","minimum":0},
+        "checkpoint":{"type":["string","null"],"description":"Selected checkpoint ID; not the Git commit OID."},
+        "next_action":{"type":"object","description":"Suggested action bound to observed state, never permission to mutate or a promise that it remains current.","properties":{"op":{"type":["string","null"]},"reason":{"type":"string"},"requires_explicit_request":{"const":true},"arguments":{"type":"object"}}},
+        "recovery":{"type":"object","description":"Recovery guidance for this recorded outcome. Never automatically replay an uncertain managed command.","properties":{"action":{"type":"string"},"retry_with_new_operation_id":{"type":"boolean"},"reason":{"type":"string"}}},
+        "proposals_truncated":{"type":"boolean"},
+        "proposals_total":{"type":"integer","minimum":0},
+        "error":{"type":"object","properties":{"code":{"type":"string"},"message":{"type":"string"}},"required":["code"]}
+    },"required":["ok"],"additionalProperties":true})
+}
+fn field_schema(field: &str) -> Value {
+    let description = match field {
+        "workspace" => "Original actor workspace ID. Use the resolution workspace ID when checkpointing a fix.",
+        "resolution_workspace" => "Separate isolated public-snapshot workspace ID; never the original private workspace.",
+        "operation_id" => "Fresh caller-chosen ASCII ID (letters, digits, underscore or hyphen; max 100). Persist the exact request before sending. Reuse only for that identical request; query operation_status after a lost response.",
+        "include_record" => "Return an explicit recorded/pending envelope with the exact result nested under result. Defaults to the original unwrapped result. Distinguishes recorded failures from lookup failures.",
+        "checkpoint" => "Explicit selected checkpoint ID returned by checkpoint, not its Git commit OID. Publication remains deliberate.",
+        "expected_generation" => "Observed workspace generation returned by status or the previous mutation. A stale value rejects safely; do not guess or silently refresh and replay.",
+        "expected_head" => "Exact current_head returned by this resolution_open. Never substitute a newer head into an old resolution request.",
+        "resolved_conflicts" => "Exactly the unique conflict paths returned by resolution_open, including non-text conflicts. An explicit review attestation, not evidence of correctness; use [] when none.",
+        "path" => "Absolute empty or nonexistent workspace directory; parent must exist. Keep separate from state, source and other workspaces.",
+        "proposal" => "Proposal ID returned by publish or resolution_submit. Follow the replacement ID after resubmission.",
+        "target" => "latest or an authoritative descendant commit OID. Adoption explicitly changes this workspace's files.",
+        "intent" => "Purpose and coherent scope of this deliberately published checkpoint (at most 4096 UTF-8 bytes).",
+        _ => "Operation argument.",
+    };
+    let mut schema = match field {
+        "resolved_conflicts" => {
+            json!({"type":"array","items":{"type":"string","minLength":1},"uniqueItems":true,"maxItems":10000})
+        }
+        "expected_generation" => json!({"type":"integer","minimum":0}),
+        "include_record" => json!({"type":"boolean"}),
+        _ => json!({"type":"string","minLength":1}),
+    };
+    schema["description"] = json!(description);
+    schema
+}
 fn tools() -> Value {
     let mut result = vec![json!({
         "name":"wipstash", "description":"Execute a Wipstash JSON request. Full trusted local engine access, including command execution and configuration. Stop unmanaged writers first. Use operation_id for retry-safe mutations; inspect operation_status after a lost response.",
         "inputSchema":{"type":"object","properties":{"request":{"type":"object","properties":{"op":{"type":"string","minLength":1}},"required":["op"]}},"required":["request"],"additionalProperties":false},
-        "annotations":{"readOnlyHint":false,"destructiveHint":true,"idempotentHint":false,"openWorldHint":true}
+        "annotations":{"readOnlyHint":false,"destructiveHint":true,"idempotentHint":false,"openWorldHint":true},
+        "outputSchema":output_schema()
     })];
     for (op, description, fields, required) in [
         (
             "status",
-            "Read project or workspace state, including generation. Does not adopt.",
+            "Read a compact workspace summary with generation, selected checkpoint, bounded recent proposal states, validation and next actions. Does not adopt. Inspect proposals_truncated and query a specific proposal when needed.",
             vec!["workspace"],
             vec![],
         ),
@@ -59,7 +103,7 @@ fn tools() -> Value {
         ),
         (
             "proposal_status",
-            "Read a proposal's integration state and evidence.",
+            "Read a proposal's integration state, snapshot-bound validation and next action. Integrated and unchecked is not a correctness claim.",
             vec!["proposal"],
             vec!["proposal"],
         ),
@@ -84,25 +128,17 @@ fn tools() -> Value {
         (
             "operation_status",
             "Read the durable outcome for an operation ID before retrying after a disconnect.",
-            vec!["operation_id"],
+            vec!["operation_id", "include_record"],
             vec!["operation_id"],
         ),
     ] {
         let properties: serde_json::Map<String, Value> = fields
             .into_iter()
-            .map(|field| {
-                let schema = if field == "resolved_conflicts" {
-                    json!({"type":"array","items":{"type":"string"},"uniqueItems":true,"maxItems":10000})
-                } else if field == "expected_generation" {
-                    json!({"type":"integer","minimum":0})
-                } else {
-                    json!({"type":"string","minLength":1})
-                };
-                (field.into(), schema)
-            })
+            .map(|field| (field.into(), field_schema(field)))
             .collect();
         result.push(json!({"name":format!("wipstash_{op}"),"description":description,
             "inputSchema":{"type":"object","properties":properties,"required":required,"additionalProperties":false},
+            "outputSchema":output_schema(),
             "annotations":{"readOnlyHint":matches!(op,"status"|"proposal_status"|"operation_status"|"resolution_tasks"),"destructiveHint":op=="adopt","idempotentHint":false,"openWorldHint":false}}));
     }
     json!({"tools":result})
@@ -151,7 +187,7 @@ impl Session {
                 // Offer our supported version when the requested revision differs.
                 json!({"protocolVersion":VERSION,"capabilities":{"tools":{}},
                     "serverInfo":{"name":"wipstash-local-prototype","version":env!("CARGO_PKG_VERSION")},
-                    "instructions":"Cooperative local prototype. Stop native/unmanaged writers before checkpoint/adopt. Publication and adoption are explicit operations; follow the caller’s authorization and client approval settings. Calls are serialized; cancellation is not implemented. Use operation IDs to recover uncertain outcomes. Inspect resolution_tasks returned by status and updates. For conflicts or failed checks, use resolution_open, edit and checkpoint only the separate resolution workspace, then resolution_submit against its expected head. Never overwrite the original workspace to resolve a proposal."})
+                    "instructions":"Cooperative local prototype. Stop native/unmanaged writers before checkpoint/adopt. Publication and adoption are explicit operations; follow the caller’s authorization and client approval settings. Calls are serialized; cancellation is not implemented. Use operation IDs to recover uncertain outcomes. Prefer compact workspace status for generation, checkpoint IDs, proposal summaries and next actions; those suggestions never authorize mutations. Validation states are unchecked, pending, passed or failed. Checks are optional by default: unchecked integration is not proof of correctness. Run only project-authorized local checks and stop on failure before submitting; configured required checks gate integration. Inspect resolution_tasks returned by status and updates. For conflicts or failed checks, use resolution_open, edit and checkpoint only the separate resolution workspace, then resolution_submit against its expected head. Never overwrite the original workspace to resolve a proposal."})
             }
             "ping" => json!({}),
             _ if !self.ready => {
@@ -195,10 +231,16 @@ impl Session {
                         match definition["type"].as_str() {
                             Some("string") => value.as_str().is_none_or(str::is_empty),
                             Some("integer") => value.as_u64().is_none(),
+                            Some("boolean") => !value.is_boolean(),
                             Some("object") => !value.is_object(),
                             Some("array") => value.as_array().is_none_or(|a| {
                                 a.len() > 10000
                                     || a.iter().any(|v| v.as_str().is_none_or(str::is_empty))
+                                    || a.iter()
+                                        .filter_map(Value::as_str)
+                                        .collect::<std::collections::HashSet<_>>()
+                                        .len()
+                                        != a.len()
                             }),
                             _ => true,
                         }
@@ -329,6 +371,59 @@ mod tests {
         bad["resolved_conflicts"] = json!("file");
         let result=s.handle(json!({"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"wipstash_resolution_submit","arguments":bad}}), &mut |_|panic!("invalid arguments executed")).unwrap();
         assert_eq!(result["result"]["isError"], true);
+    }
+    #[test]
+    fn discovery_describes_state_evidence_and_identity_boundaries() {
+        let definitions = tools();
+        for tool in definitions["tools"].as_array().unwrap() {
+            assert_eq!(tool["outputSchema"]["required"], json!(["ok"]));
+            assert_eq!(
+                tool["outputSchema"]["properties"]["validation"]["properties"]["state"]["enum"],
+                json!(["unchecked", "pending", "passed", "failed"])
+            );
+            if tool["name"] != "wipstash" {
+                for field in tool["inputSchema"]["properties"]
+                    .as_object()
+                    .unwrap()
+                    .values()
+                {
+                    assert!(!field["description"].as_str().unwrap().is_empty());
+                }
+            }
+        }
+        assert!(field_schema("checkpoint")["description"]
+            .as_str()
+            .unwrap()
+            .contains("not its Git commit OID"));
+        assert!(field_schema("expected_head")["description"]
+            .as_str()
+            .unwrap()
+            .contains("Never substitute"));
+    }
+    #[test]
+    fn duplicate_conflict_attestations_never_execute() {
+        let mut s = Session::default();
+        init(&mut s);
+        let args = json!({"workspace":"owner","proposal":"p","resolution_workspace":"fix","checkpoint":"cp","expected_head":"head","resolved_conflicts":["file","file"],"operation_id":"submit"});
+        let result = s.handle(json!({"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"wipstash_resolution_submit","arguments":args}}), &mut |_| panic!("duplicate conflict attestation executed")).unwrap();
+        assert_eq!(result["result"]["isError"], true);
+        assert_eq!(
+            result["result"]["structuredContent"]["error"]["code"],
+            "invalid_arguments"
+        );
+    }
+    #[test]
+    fn operation_record_envelope_is_explicit_and_boolean() {
+        let mut s = Session::default();
+        init(&mut s);
+        let reply = s.handle(json!({"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"wipstash_operation_status","arguments":{"operation_id":"cp","include_record":true}}}), &mut |r| {
+            assert_eq!(r, json!({"op":"operation_status","operation_id":"cp","include_record":true}));
+            json!({"ok":true,"recorded":true,"state":"completed","result":{"ok":false,"error":{"code":"generation_mismatch"}}})
+        }).unwrap();
+        assert_eq!(reply["result"]["structuredContent"]["result"]["ok"], false);
+        assert_eq!(reply["result"]["isError"], false);
+        let reply = s.handle(json!({"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"wipstash_operation_status","arguments":{"operation_id":"cp","include_record":"true"}}}), &mut |_| panic!("invalid boolean executed")).unwrap();
+        assert_eq!(reply["result"]["isError"], true);
     }
     #[test]
     fn envelope_and_argument_errors_never_execute() {

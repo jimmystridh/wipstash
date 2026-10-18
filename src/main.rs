@@ -1,6 +1,7 @@
 mod adoption;
 mod backup;
 mod client;
+mod client_journal;
 mod engine;
 mod git;
 mod policy;
@@ -15,10 +16,7 @@ fn request(state: &std::path::Path, s: &str) -> Value {
         .and_then(|v| engine::execute(state, v))
     {
         Ok(v) => v,
-        Err(e) => {
-            let code = e.split(':').next().unwrap_or("internal_error");
-            json!({"ok":false,"error":{"code":code,"message":e}})
-        }
+        Err(e) => engine::error_response(&e),
     }
 }
 fn worker_startup(state: &std::path::Path) -> Result<(), String> {
@@ -30,6 +28,21 @@ fn worker_startup(state: &std::path::Path) -> Result<(), String> {
 }
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    if args.get(1).map(String::as_str) == Some("client-journal") {
+        if args.len() != 3 {
+            eprintln!("usage: wipstash client-journal ABS_PRIVATE_DIRECTORY");
+            std::process::exit(2);
+        }
+        if let Err(error) = client_journal::serve(
+            std::path::Path::new(&args[2]),
+            std::io::stdin().lock(),
+            std::io::stdout().lock(),
+        ) {
+            eprintln!("client_journal: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
     if args.get(1).map(String::as_str) == Some("remote") {
         // Resolve a fixed companion executable, never a PATH-selected helper.
         let outcome = std::env::current_exe().and_then(|path| {
