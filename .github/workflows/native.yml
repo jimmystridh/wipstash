@@ -67,6 +67,22 @@ jobs:
             evidence/pairing-live/safe-stderr.txt
           if-no-files-found: warn
           retention-days: 7
+      - name: Real TLS resumable transfer and application-fault campaign
+        if: runner.os == 'Linux'
+        env:
+          WIPSTASH_LIVE_TLS_CI: '1'
+          WIPSTASH_LIVE_TLS_ARTIFACT_DIR: ${{ github.workspace }}/evidence/live-tls
+        run: cargo test --locked --manifest-path services/transport/Cargo.toml --test live_tls_ci four_devices_live_tls_restart_and_faults -- --ignored --nocapture
+      - name: Save bounded TLS fault evidence
+        if: always() && runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: live-tls-faults-${{ github.sha }}
+          path: |
+            evidence/live-tls/summary.json
+            evidence/live-tls/server.log
+          if-no-files-found: warn
+          retention-days: 7
       - name: Native storage admission and Git paths
         run: |
           cargo test --locked --manifest-path services/storage/Cargo.toml canonical_roots_preserve_admission_checks
