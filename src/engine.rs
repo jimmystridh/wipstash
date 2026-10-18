@@ -1797,7 +1797,7 @@ mod regression_tests {
         fs::write(p.0.join("B/private-wip"), "original owner private WIP\n").unwrap();
         fs::write(p.0.join("B/.env"), "synthetic excluded canary\n").unwrap();
         let owner_before = local(&p.0.join("state"), "B")
-            .capture(&p.0.join("B"))
+            .capture(&p.0.join("B").canonicalize().unwrap())
             .unwrap();
         queue_public_change(&p, "newer", "other", "unrelated\n");
         integrate_one(&p);
@@ -1817,7 +1817,7 @@ mod regression_tests {
         }
         assert_eq!(
             local(&p.0.join("state"), "B")
-                .capture(&p.0.join("B"))
+                .capture(&p.0.join("B").canonicalize().unwrap())
                 .unwrap(),
             owner_before
         );
