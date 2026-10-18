@@ -1,0 +1,29 @@
+{
+  "date": "2026-10-18",
+  "verdict": "PASS: all eight integrated heads and final eight-feature state pass the fixed oracle",
+  "campaign": "Fresh strict sequential native-agent MCP follow-on",
+  "prior_campaign_failure_preserved": true,
+  "independent_replication": false,
+  "actual_product_client_acceptance": false,
+  "source_published_commit": "5bb87a98eb360c86e01f6ae32ec911028bfc849a",
+  "source_tree": "9897467043aa3f86930a811bd08d3f9addb350ca",
+  "binary_sha256": "17f406790e388a36791228012b1b3cdc1f0fd496e1d816b58ccee264dcaf3088",
+  "bridge_sha256": "1c9fc76deb5f2734ad5c506ccaf1631053b81e912ae71ad4276b115db16a89b9",
+  "fixture_manifest": {
+    ".gitignore": "862263fa1f46c20f0d1e4dac5ffcc75abd55c08211b2c3864c5f8764b9d87793",
+    "billing.py": "077f93d39b9b7a99fd1682afb6e9051dc8aaa9dc4bb765c5b4a06eae5ae455c2",
+    "inventory.py": "25577f4a204f3f028611c143343258ac75eb150d6987a5938886a6ed39497597",
+    "registry.py": "d5ecab2bb0bef3882058dafc24615d9100db5091c2d4755c7709f6d106aefe38",
+    "stats.py": "5d2c08c31e3016e266386bdc142dca258e7fa9fbaa50c624f358d9ee0c348888",
+    "text.py": "c53ea9dcd2cb188f80fffd9ad8a126c7a9f2f5c4f1211f21dd89d8f8eeb1baa5"
+  },
+  "requirements_sha256": "4a891fd3e9608165d35c984a340ccda6730c48449c215651c0b6a03bfed0b08f",
+  "oracle_sha256": "c30ebbca4e53e63e84c6e453808fbec3aeb4169f7a9825035124939530a9d61b",
+  "strict_sequence_verified_sessions": 495,
+  "raw_model_conversations_included": false,
+  "credentials_or_auth_state_included": false,
+  "sanitized_artifact_sha256": {
+    "STRICT-MCP-FOLLOWON-2026-10-18.md": "0913393cbc5916eee15649de3f02de7ce81519969f8c299416e0aeb366038cd5",
+    "strict-mcp-summary-2026-10-18.json": "06469a6ee5a752129b775793539ae8ce9f626d6099913db46484668951014635"
+  }
+}

@@ -1,0 +1,109 @@
+{
+  "simulation_kind": "Four native autonomous model actors with real stdio MCP requests; not standalone Codex/Claude product clients",
+  "source": {
+    "source_commit_local": "12bf357528c86eabe85d5d6e89aba07ee7126233",
+    "source_commit_published": "5bb87a98eb360c86e01f6ae32ec911028bfc849a",
+    "source_tree": "9897467043aa3f86930a811bd08d3f9addb350ca",
+    "binary_sha256": "17f406790e388a36791228012b1b3cdc1f0fd496e1d816b58ccee264dcaf3088",
+    "fixture_manifest": {
+      ".gitignore": "862263fa1f46c20f0d1e4dac5ffcc75abd55c08211b2c3864c5f8764b9d87793",
+      "billing.py": "077f93d39b9b7a99fd1682afb6e9051dc8aaa9dc4bb765c5b4a06eae5ae455c2",
+      "inventory.py": "25577f4a204f3f028611c143343258ac75eb150d6987a5938886a6ed39497597",
+      "registry.py": "d5ecab2bb0bef3882058dafc24615d9100db5091c2d4755c7709f6d106aefe38",
+      "stats.py": "5d2c08c31e3016e266386bdc142dca258e7fa9fbaa50c624f358d9ee0c348888",
+      "text.py": "c53ea9dcd2cb188f80fffd9ad8a126c7a9f2f5c4f1211f21dd89d8f8eeb1baa5"
+    },
+    "oracle_sha256": "c30ebbca4e53e63e84c6e453808fbec3aeb4169f7a9825035124939530a9d61b",
+    "requirements_sha256": "4a891fd3e9608165d35c984a340ccda6730c48449c215651c0b6a03bfed0b08f",
+    "codex_version": "0.159.2",
+    "codex_probe": "failed to initialize in-process app-server client: Read-only file system (os error 30)",
+    "product_model_session_started": false,
+    "client": "native autonomous actors via real stdio MCP",
+    "source_edits_frozen": true
+  },
+  "verdict": "SEMANTIC FAIL at one intermediate public head, followed by recorded recovery; final 8-feature state valid",
+  "final_public_head": "c0d520cc1c21b4da26ae5c2176b39b1a41f0f9ab",
+  "final_valid_features": [
+    "available_units",
+    "discounted_cents",
+    "initials",
+    "median",
+    "moving_average",
+    "restock_units",
+    "slugify",
+    "subtotal_cents"
+  ],
+  "initial_publications": 8,
+  "integrated_heads": 8,
+  "semantic_failed_intermediate_heads": 1,
+  "failed_heads": [
+    "af2dbd5bf8796099bd304e0a9718db2e591f0c83"
+  ],
+  "proposal_states": {
+    "integrated": 8,
+    "superseded": 7
+  },
+  "resolution_opens": 12,
+  "accepted_resolution_submissions": 7,
+  "stale_resolution_rejections": 4,
+  "mcp_sessions": 460,
+  "mcp_tool_calls_by_operation": {
+    "adopt": 2,
+    "checkpoint": 24,
+    "init": 1,
+    "integrate": 319,
+    "open": 5,
+    "operation_status": 2,
+    "proposal_status": 25,
+    "publish": 8,
+    "resolution_open": 12,
+    "resolution_submit": 11,
+    "resolution_tasks": 22,
+    "status": 28,
+    "updates": 1
+  },
+  "all_mcp_sessions_eof_exit_zero": true,
+  "original_manifest_before_after_samples_unchanged": 59,
+  "all_four_live_canaries_present": true,
+  "private_checkpoint_commits_absent_public": 4,
+  "all_public_blobs_scanned_for_private_canaries": 40,
+  "git_fsck_passed": true,
+  "sqlite_integrity_passed": true,
+  "duplicate_committed_promotions": 0,
+  "observer_updates_did_not_mutate": true,
+  "observer_explicit_adoption_passed": true,
+  "withheld_response_recoveries": 2,
+  "adopt_exact_replay_same_outcome": true,
+  "manual_source_fixes_by_parent": false,
+  "external_feedback_and_observer_restart": true,
+  "engine_required_checks_configured": false,
+  "fixed_oracle_unchanged": true,
+  "first_publish_to_last_integration_seconds": 296.53455996513367,
+  "limits": [
+    "Workload bridge pipelined ordered initialize, initialized notification, tools/list and tools/call frames without awaiting each startup response. One real MCP process per request, all workload processes observed graceful EOF. This is not a strict product-client lifecycle acceptance claim. A separate post-workload sequential read-only smoke passed and does not replace the campaign.",
+    "External oracle observes public snapshots; engine checks remain off and no check or repair process was configured.",
+    "Faulty actor resolution was accepted unchecked and external coordinator feedback affected subsequent work.",
+    "No network transport, listener, process kill, new credentials/grants, production-source modification or actual Codex/Claude model acceptance.",
+    "Small synthetic task; no throughput, saturation, optimal publication size or arbitrary native writer containment claim."
+  ],
+  "actor_mcp_calls": 126,
+  "integration_mcp_polls": 319,
+  "workload_lifecycle_frames_pipelined": true,
+  "mcp_session_count_scope": "460 original workload/observer/audit bridge sessions; excludes two later read-only sequential smoke attempts",
+  "strict_sequential_post_workload_smoke": {
+    "after_workload": true,
+    "strict_sequential_lifecycle": true,
+    "awaited_initialize_response_before_initialized": true,
+    "tool_discovery_count": 12,
+    "same_session_successful_tool_calls": 3,
+    "tools": [
+      "wipstash_status",
+      "wipstash_resolution_tasks",
+      "wipstash_operation_status"
+    ],
+    "eof_exit": 0,
+    "model_product_client": false,
+    "does_not_replace_original_pipelined_bridge_evidence": true,
+    "initial_smoke_harness_correction": "First read-only attempt expected 13 tools instead of actual current 12 and stopped at discovery; corrected to exact source-derived names. Server was not changed."
+  }
+}
