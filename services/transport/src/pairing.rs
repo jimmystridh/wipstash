@@ -1435,7 +1435,7 @@ mod tests {
         params.distinguished_name = rcgen::DistinguishedName::new();
         params
             .distinguished_name
-            .push(rcgen::DnType::CommonName, "X".repeat(6000));
+            .push(rcgen::DnType::CommonName, "X".repeat(3000));
         let ca = params.self_signed(&key).unwrap();
         f.scope.ca_certificate_der = ca.der().to_vec();
         let issuer = Issuer::from_pem(&ca.pem(), &key.serialize_pem(), f.now).unwrap();
