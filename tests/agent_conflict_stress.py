@@ -8,6 +8,7 @@ Only summary.json is intended for upload; scratch state contains synthetic WIP.
 """
 import argparse
 import contextlib
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import json
@@ -18,6 +19,7 @@ import sqlite3
 import sys
 import tempfile
 import threading
+import time
 import unittest
 
 from harness_support import Harness, canaries, manifest, write
@@ -25,11 +27,34 @@ from harness_support import Harness, canaries, manifest, write
 ARGS = None
 ROOT = None
 HEAD = 'refs/wipstash/integration'
+COUNTS = Counter()
+COUNT_LOCK = threading.Lock()
+DISTINCT = {'published_proposals': set(), 'submitted_resolutions': set(), 'returned_conflicts': set(), 'integrated_proposals': set()}
+
+def observe(scope, request, response):
+    with COUNT_LOCK:
+        COUNTS['requests'] += 1
+        COUNTS['op_' + request['op']] += 1
+        if not response.get('ok', False):
+            COUNTS['rejected_requests'] += 1
+        elif request['op'] == 'publish':
+            DISTINCT['published_proposals'].add((scope, response['proposal']))
+        elif request['op'] == 'resolution_submit':
+            DISTINCT['submitted_resolutions'].add((scope, response['proposal']))
+        elif request['op'] == 'integrate':
+            for outcome in response['outcomes']:
+                if outcome['state'] == 'quarantined':
+                    DISTINCT['returned_conflicts'].add((scope, outcome['proposal']))
+                elif outcome['state'] == 'integrated':
+                    DISTINCT['integrated_proposals'].add((scope, outcome['proposal']))
 
 
 class ConflictStress(unittest.TestCase):
     def setUp(self):
-        self.h = Harness(ARGS.binary, ROOT / self._testMethodName)
+        # Keep fixtures beneath Windows MAX_PATH without weakening production guards.
+        # Descriptive test names remain in unittest output and summary evidence.
+        case_id = 't-' + hashlib.sha256(self._testMethodName.encode()).hexdigest()[:8]
+        self.h = Harness(ARGS.binary, ROOT / case_id)
         self.state = self.h.root / 'state'
         self.paths = {a: self.h.root / ('work-' + a) for a in 'ABCD'}
         self.generations = {}
@@ -47,6 +72,7 @@ class ConflictStress(unittest.TestCase):
             self.serial += 1
             request.setdefault('operation_id', 'stress-' + str(self.serial))
         reply = self.h.call('--state', self.state, json.dumps(request), ok=ok)
+        observe(self._testMethodName, request, reply)
         if ok:
             self.assertTrue(reply['ok'], reply)
         else:
@@ -152,8 +178,24 @@ class ConflictStress(unittest.TestCase):
         self.req(ok=False, **dict(request, workspace=winner, operation_id='wrong-owner-submit'))
         self.req(ok=False, **dict(request, resolved_conflicts=[], operation_id='missing-attestation'))
         self.req(ok=False, **dict(request, resolved_conflicts=['notes/shared.txt', 'notes/shared.txt'], operation_id='duplicate-attestation'))
+        rival = self.open_resolution(first, proposals[first], 'rival')
+        write(rival[1], 'notes/shared.txt', text)
+        rival_request = self.submit_request(first, proposals[first], rival, 'distinct-rival-resolution')
+        gate = threading.Barrier(2)
+        def compete(candidate):
+            gate.wait(timeout=30)
+            reply = self.h.call('--state', self.state, json.dumps(candidate), ok=False)
+            observe(self._testMethodName, candidate, reply)
+            return candidate, reply
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            raced = list(pool.map(compete, [request, rival_request]))
+        self.assertEqual([False, True], sorted(reply.get('ok', False) for _, reply in raced), raced)
+        request, accepted = next((candidate, reply) for candidate, reply in raced if reply.get('ok'))
+        rejected_request, rejected = next((candidate, reply) for candidate, reply in raced if not reply.get('ok'))
+        self.assertEqual(rejected, self.req(ok=False, **rejected_request))
         with ThreadPoolExecutor(max_workers=4) as pool:
             replies = list(pool.map(lambda _: self.req(**request), range(4)))
+        self.assertEqual(accepted, replies[0])
         self.assertTrue(all(r == replies[0] for r in replies), replies)
         replacement = replies[0]['proposal']
         self.assertEqual(replies[0], self.req(**request))
@@ -216,6 +258,73 @@ class ConflictStress(unittest.TestCase):
         self.audit()
 
 
+    def test_distinct_agents_concurrent_publish_and_resolution_waves(self):
+        # Three waves, four independently owned workspaces per wave. The actor
+        # that wins is discovered from integration results, never thread order.
+        for wave in range(3):
+            owners = ['wave-' + str(wave) + '-' + a for a in 'ABCD']
+            paths = {}
+            for owner in owners:
+                path = self.h.root / owner
+                paths[owner] = path
+                self.generations[owner] = self.req(op='open', workspace=owner, path=str(path))['generation']
+                canaries(path, owner)
+            barrier = threading.Barrier(4)
+            def publish_actor(owner):
+                write(paths[owner], 'notes/shared.txt', owner + '\n')
+                barrier.wait(timeout=30)
+                proposal = self.publish(owner)
+                write(paths[owner], 'unpublished.txt', 'PRIVATE_CONFLICT_CANARY ' + owner + '\n')
+                return owner, proposal
+            with ThreadPoolExecutor(max_workers=4) as pool:
+                proposals = dict(pool.map(publish_actor, owners))
+            frozen = {owner: manifest(path) for owner, path in paths.items()}
+            outcomes = self.req(op='integrate')['outcomes']
+            self.assertEqual(4, len(outcomes))
+            integrated = [o['proposal'] for o in outcomes if o['state'] == 'integrated']
+            self.assertEqual(1, len(integrated), outcomes)
+            winner = next(owner for owner, proposal in proposals.items() if proposal == integrated[0])
+            pending = {owner: proposal for owner, proposal in proposals.items() if owner != winner}
+            resolved_owners = set()
+            for attempt in range(1, 4):
+                if not pending:
+                    break
+                head = self.head()
+                baseline = self.h.git(self.repo(), 'show', head + ':notes/shared.txt') + '\n'
+                barrier = threading.Barrier(len(pending))
+                def resolve_actor(item):
+                    owner, proposal = item
+                    resolution = self.open_resolution(owner, proposal, 'wave-attempt-' + str(attempt))
+                    self.assertEqual(head, resolution[2])
+                    write(resolution[1], 'notes/shared.txt', baseline + 'resolved-' + owner + '\n')
+                    request = self.submit_request(owner, proposal, resolution,
+                                                  'wave-submit-' + owner + '-' + str(attempt))
+                    barrier.wait(timeout=30)
+                    return owner, self.req(**request)['proposal']
+                with ThreadPoolExecutor(max_workers=4) as pool:
+                    submitted = dict(pool.map(resolve_actor, pending.items()))
+                self.assertEqual(len(pending), len(set(submitted.values())))
+                outcomes = self.req(op='integrate')['outcomes']
+                self.assertEqual(len(submitted), len(outcomes))
+                integrated = [o['proposal'] for o in outcomes if o['state'] == 'integrated']
+                self.assertEqual(1, len(integrated), outcomes)
+                integrated_owner = next(owner for owner, proposal in submitted.items() if proposal == integrated[0])
+                resolved_owners.add(integrated_owner)
+                pending = {owner: proposal for owner, proposal in submitted.items() if owner != integrated_owner}
+                for owner, proposal in pending.items():
+                    tasks = self.tasks(owner)
+                    self.assertEqual([proposal], [t['proposal'] for t in tasks])
+                    self.assertEqual(attempt, tasks[0]['attempt'])
+                    self.assertEqual('action_required', tasks[0]['state'])
+                self.assertEqual(frozen, {owner: manifest(path) for owner, path in paths.items()})
+            self.assertEqual({}, pending, 'Every distinct agent must finish within the three-attempt lineage budget')
+            final = self.h.git(self.repo(), 'show', self.head() + ':notes/shared.txt').splitlines()
+            self.assertEqual({winner, *('resolved-' + owner for owner in resolved_owners)}, set(final))
+            self.assertEqual(4, len(final))
+            for owner in owners:
+                self.assertEqual([], self.tasks(owner))
+        self.audit()
+
     def test_resolution_fault_recovery_and_cancelled_session(self):
         for a in 'AB':
             write(self.paths[a], 'notes/shared.txt', 'fault-' + a + '\n')
@@ -246,7 +355,14 @@ class ConflictStress(unittest.TestCase):
         write(path, 'notes/shared.txt', 'fault-A\nresolved-B\n')
         request = self.submit_request('B', proposal, resolution, 'fault-submit-pin')
         fault('resolution_submit_after_pin', request)
+        pinned = self.h.git(self.state / 'locals/B/objects.git', 'rev-parse', 'refs/wipstash/exports/fault-submit-pin')
+        # Cross Git's one-second commit timestamp boundary before retrying.
+        # Reusing the operation must recover the original pin, not synthesize a
+        # sibling commit that only happened to hash identically on a fast runner.
+        time.sleep(2.1)
         submitted = self.req(**request)
+        self.assertEqual(pinned, submitted['commit'])
+        self.assertEqual(pinned, self.h.git(self.state / 'locals/B/objects.git', 'rev-parse', 'refs/wipstash/exports/fault-submit-pin'))
         self.assertEqual(submitted, self.req(**request))
         self.req(op='integrate')
         self.assertEqual('integrated', self.status(submitted['proposal'])['state'])
@@ -288,6 +404,7 @@ class ConflictStress(unittest.TestCase):
                 self.serial += 1
                 request.setdefault('operation_id', 'remote-' + str(self.serial))
             result = self.h.call('--state', states[a], json.dumps(request), ok=ok)
+            observe(self._testMethodName + a, request, result)
             self.assertEqual(ok, result.get('ok', False), result)
             return result
         def export(a, kind, proposal=None):
@@ -358,9 +475,15 @@ class ConflictStress(unittest.TestCase):
             self.assertNotIn('diagnosis', task_payload)
             self.assertNotIn('spawn_error', json.dumps(task_payload))
             self.assertNotIn(str(self.h.root), json.dumps(task_payload))
-            deliver(a, shared_head)
+            if a != 'B':
+                deliver(a, shared_head)
         # Both offline agents submit against the same observed head; only B gets there first.
+        cached_b = req('B', op='status')['head']
+        self.assertNotEqual(req('hub', op='status')['head'], cached_b)
         revised_b = resolve('B', proposals['B'], 'first', 'remote-A\nresolved-B\n')
+        self.assertEqual(req('hub', op='status')['head'], self.h.git(states['B'] / 'locals/B/objects.git', 'rev-parse', req('B', op='proposal_status', proposal=revised_b)['commit'] + '^'))
+        self.assertEqual(cached_b, req('B', op='status')['head'], 'Using receipt inputs must not advance cached integration HEAD')
+        deliver('B', shared_head)
         revised_c = resolve('C', proposals['C'], 'first', 'remote-A\nresolved-C\n')
         artifact_b = export('B', 'proposal', revised_b)
         artifact_c = export('C', 'proposal', revised_c)
@@ -393,6 +516,12 @@ class ConflictStress(unittest.TestCase):
         deliver('C', receipt_c)
         deliver('C', receipt_c)
         deliver('C', receipts['C'])  # Late duplicate parent observation cannot erase the new task.
+        latest_parent = export('hub', 'receipt', authority_ids['C'])
+        old_revision = json.loads((receipts['C'] / 'manifest.json').read_text())['receipt']['revision']
+        new_revision = json.loads((latest_parent / 'manifest.json').read_text())['receipt']['revision']
+        self.assertGreater(new_revision, old_revision)
+        deliver('C', latest_parent)  # Newly issued superseded-parent observation is harmless too.
+        deliver('C', receipts['C'], ok=False)  # Historical revision is now genuinely stale.
         tasks = req('C', op='resolution_tasks', workspace='C')['tasks']
         self.assertEqual([revised_c], [t['proposal'] for t in tasks])
         self.assertEqual(1, tasks[0]['attempt'])
@@ -429,13 +558,16 @@ def main():
     ARGS.binary = str(binary)
     artifacts = Path(ARGS.artifacts)
     artifacts.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix='wipstash-conflict-') as scratch:
-        ROOT = Path(scratch)
+    with tempfile.TemporaryDirectory(prefix='wc-') as scratch:
+        ROOT = Path(scratch).resolve()
         result = unittest.TextTestRunner(verbosity=2).run(unittest.defaultTestLoader.loadTestsFromTestCase(ConflictStress))
         summary = {'seed': ARGS.seed, 'tests': result.testsRun, 'successful': result.wasSuccessful(),
                    'failed_tests': [t.id() for t, _ in result.failures + result.errors],
                    'binary_sha256': hashlib.sha256(Path(ARGS.binary).read_bytes()).hexdigest(),
                    'test_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+                   'max_concurrent_agents': 4, 'distinct_agent_waves': 3,
+                   'operation_counts': dict(sorted(COUNTS.items())),
+                   'distinct_outcome_counts': {key: len(values) for key, values in DISTINCT.items()},
                    'scope': 'Four scripted agents; real concurrent CLI requests and fresh-process durable recovery; no sockets or process killing; no real AI sessions.'}
         (artifacts / 'summary.json').write_text(json.dumps(summary, indent=2) + '\n')
         return 0 if result.wasSuccessful() else 1

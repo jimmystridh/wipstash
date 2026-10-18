@@ -1029,16 +1029,25 @@ mod tests {
         let head = blob(d.path(), b"resolution head");
         let tree = blob(d.path(), b"resolution tree");
         let garbage = blob(d.path(), b"resolution garbage");
-        for oid in [&head, &tree, &garbage] { age(d.path(), oid); }
+        for oid in [&head, &tree, &garbage] {
+            age(d.path(), oid);
+        }
         let db = Connection::open(d.path().join("state.sqlite")).unwrap();
         db.execute_batch("CREATE TABLE proposal_resolutions(proposal TEXT PRIMARY KEY,parent TEXT NOT NULL,root TEXT NOT NULL,attempt INTEGER NOT NULL); CREATE TABLE resolution_sessions(id TEXT PRIMARY KEY,proposal TEXT NOT NULL,owner TEXT NOT NULL,workspace TEXT UNIQUE NOT NULL,path TEXT UNIQUE NOT NULL,head TEXT NOT NULL,tree TEXT NOT NULL,conflicts TEXT NOT NULL,state TEXT NOT NULL);").unwrap();
-        db.execute("INSERT INTO proposal_resolutions VALUES('child','parent','parent',1)", []).unwrap();
+        db.execute(
+            "INSERT INTO proposal_resolutions VALUES('child','parent','parent',1)",
+            [],
+        )
+        .unwrap();
         db.execute("INSERT INTO resolution_sessions VALUES('session','parent','owner','work','/resolution',?1,?2,'[]','open')", [&head, &tree]).unwrap();
         let p = plan(d.path(), "coordinator.git", 86400).unwrap();
         assert_eq!(p.candidates.len(), 1);
         assert_eq!(p.candidates[0].oid, garbage);
-        db.execute("UPDATE resolution_sessions SET conflicts='broken'", []).unwrap();
-        assert!(plan(d.path(), "coordinator.git", 86400).unwrap_err().contains("invalid journal JSON"));
+        db.execute("UPDATE resolution_sessions SET conflicts='broken'", [])
+            .unwrap();
+        assert!(plan(d.path(), "coordinator.git", 86400)
+            .unwrap_err()
+            .contains("invalid journal JSON"));
     }
     #[test]
     fn aged_unreachable_reclaimed_pending_and_acknowledged_pins_survive() {

@@ -127,12 +127,15 @@ pub fn activate(db: &Connection, request: &Value) -> R<Value> {
             && oid(&base)
             && snapshot["intent"].is_string()
         {
-            let original = original.to_string();
+            // Public recovery preserves disposition and retry lineage, but not
+            // opaque evaluation details. Explicit activation requeues unresolved
+            // work so the current policy regenerates complete task evidence.
             details["eligibility_restored"] = json!(true);
             details["operator_activated"] = json!(true);
+            details["fresh_evaluation_pending"] = json!(true);
             sql(tx.execute(
-                "UPDATE proposals SET state=?2,details=?3 WHERE id=?1",
-                params![id, original, details.to_string()],
+                "UPDATE proposals SET state='coordinator_accepted',details=?2 WHERE id=?1",
+                params![id, details.to_string()],
             ))?;
             activated += 1;
         }
@@ -380,7 +383,15 @@ pub fn restore(state: &Path, db: &Connection, destination: &Path) -> R<Value> {
             sql(tx.execute("INSERT INTO proposals(id,workspace,checkpoint,commit_oid,base,intent,state,head,details) VALUES(?1,'','',?2,?6,?7,?3,?4,?5)",params![id,p.commit,p.state,p.head,details,snapshot["base"].as_str().unwrap_or(""),if v2 {snapshot["intent"].as_str().unwrap_or("")}else{""}]))?;
             if let Some(lineage) = snapshot.get("resolution").filter(|v| !v.is_null()) {
                 sql(tx.execute_batch("CREATE TABLE IF NOT EXISTS proposal_resolutions(proposal TEXT PRIMARY KEY,parent TEXT NOT NULL,root TEXT NOT NULL,attempt INTEGER NOT NULL)"))?;
-                sql(tx.execute("INSERT INTO proposal_resolutions VALUES(?1,?2,?3,?4)", params![id, lineage["parent"].as_str(), lineage["root"].as_str(), lineage["attempt"].as_i64()]))?;
+                sql(tx.execute(
+                    "INSERT INTO proposal_resolutions VALUES(?1,?2,?3,?4)",
+                    params![
+                        id,
+                        lineage["parent"].as_str(),
+                        lineage["root"].as_str(),
+                        lineage["attempt"].as_i64()
+                    ],
+                ))?;
             }
         }
         let gate = if v2 {
@@ -596,7 +607,7 @@ mod tests {
         let git = Git::open(&f.source.join("coordinator.git"));
         let base = git.head("refs/wipstash/integration").unwrap();
         let intent = "Accepted public intent: preserve the greeting";
-        db.execute("INSERT INTO proposals VALUES('pending','PRIVATE_WORKSPACE_CANARY','PRIVATE_CHECKPOINT_CANARY',?1,?2,?3,'coordinator_accepted',NULL,'PRIVATE_OUTPUT_CANARY')",params![f.proposal,base,intent]).unwrap();
+        db.execute("INSERT INTO proposals VALUES('pending','PRIVATE_WORKSPACE_CANARY','PRIVATE_CHECKPOINT_CANARY',?1,?2,?3,'quarantined',NULL,'PRIVATE_OUTPUT_CANARY')",params![f.proposal,base,intent]).unwrap();
         let binding = json!({"project":"public-project","authority":"public-authority","epoch":7,"device":"public-authority","role":"authority","peers":["public-client"]});
         let policy = json!({"checks":[{"id":"public-check","argv":["/PRIVATE_PATH_CANARY/check","PRIVATE_CREDENTIAL_CANARY"],"timeout_seconds":1}]});
         db.execute(
@@ -824,6 +835,22 @@ mod tests {
             activate(&f.db, &request).unwrap()["activation_required"],
             false
         );
+        // A restored quarantine must be evaluated again before an agent receives
+        // a task. A missing check executable reliably fails without launching it.
+        let integrated = crate::engine::execute(&f.state, json!({"op":"integrate"})).unwrap();
+        assert_eq!(integrated["outcomes"][0]["state"], "quarantined");
+        let task = &integrated["outcomes"][0]["resolution_task"];
+        assert_eq!(task["current_head"], base);
+        assert!(task["policy_sha256"].as_str().is_some_and(|s| s.len() == 64));
+        let destination = f.dir.join("restored-resolution-receipt");
+        let receipt = crate::engine::execute(&f.state, json!({"op":"sync_export","kind":"receipt","proposal":"pending","operation_id":"fresh-restored-task","destination":destination})).unwrap();
+        assert_eq!(receipt["ok"], true);
+        let manifest: Value = serde_json::from_slice(&fs::read(destination.join("manifest.json")).unwrap()).unwrap();
+        assert_eq!(manifest["receipt"]["resolution_task"]["proposal"], "public-source");
+        assert_eq!(manifest["receipt"]["resolution_task"]["current_head"], base);
+        assert_eq!(manifest["receipt"]["resolution_task"]["attempt"], 0);
+        assert!(!manifest.to_string().contains("PRIVATE_PATH_CANARY"));
+
     }
     #[test]
     fn repeated_fenced_recovery_preserves_fifo_and_original_disposition() {
@@ -875,7 +902,7 @@ mod tests {
             vec![
                 ("pending".into(), "coordinator_accepted".into()),
                 ("z-second".into(), "coordinator_accepted".into()),
-                ("a-third".into(), "quarantined".into())
+                ("a-third".into(), "coordinator_accepted".into())
             ]
         );
     }
@@ -1026,27 +1053,57 @@ mod tests {
         let f = Fixture::new();
         let db = Connection::open(f.source.join("state.sqlite")).unwrap();
         db.execute("INSERT INTO proposals(id,workspace,checkpoint,commit_oid,base,intent,state) VALUES('pending','','',?1,'','','superseded')",[&f.proposal]).unwrap();
-        db.execute("INSERT INTO events(kind,data) VALUES('superseded',?1)", [json!({"proposal":"pending"}).to_string()]).unwrap();
+        db.execute(
+            "INSERT INTO events(kind,data) VALUES('superseded',?1)",
+            [json!({"proposal":"pending"}).to_string()],
+        )
+        .unwrap();
         backup::flush(&f.source, &db, &f.remote).unwrap();
         restore(&f.state, &f.db, &f.remote).unwrap();
-        let state: String = f.db.query_row("SELECT state FROM proposals WHERE id='pending'", [], |r| r.get(0)).unwrap();
+        let state: String =
+            f.db.query_row("SELECT state FROM proposals WHERE id='pending'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
         assert_eq!(state, "superseded");
     }
     #[test]
     fn preserves_resolution_lineage_without_private_sessions() {
         let f = Fixture::new();
         let db = Connection::open(f.source.join("state.sqlite")).unwrap();
-        db.execute("INSERT INTO proposals(id,workspace,checkpoint,commit_oid,base,intent,state) VALUES('pending','PRIVATE_OWNER','PRIVATE_CHECKPOINT',?1,'','','quarantined')",[&f.proposal]).unwrap();
+        let base = Git::open(&f.source.join("coordinator.git")).head("refs/wipstash/integration").unwrap();
+        db.execute("INSERT INTO proposals(id,workspace,checkpoint,commit_oid,base,intent,state) VALUES('pending','PRIVATE_OWNER','PRIVATE_CHECKPOINT',?1,?2,'public retry intent','quarantined')",params![f.proposal,base]).unwrap();
         db.execute_batch("CREATE TABLE IF NOT EXISTS proposal_resolutions(proposal TEXT PRIMARY KEY,parent TEXT NOT NULL,root TEXT NOT NULL,attempt INTEGER NOT NULL)").unwrap();
-        db.execute("INSERT INTO proposal_resolutions VALUES('pending','original','original',3)", []).unwrap();
+        db.execute(
+            "INSERT INTO proposal_resolutions VALUES('pending','original','original',3)",
+            [],
+        )
+        .unwrap();
         backup::flush(&f.source, &db, &f.remote).unwrap();
         restore(&f.state, &f.db, &f.remote).unwrap();
-        let lineage: (String,String,i64) = f.db.query_row("SELECT parent,root,attempt FROM proposal_resolutions WHERE proposal='pending'", [], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap();
-        assert_eq!(lineage, ("original".into(),"original".into(),3));
+        let lineage: (String, String, i64) =
+            f.db.query_row(
+                "SELECT parent,root,attempt FROM proposal_resolutions WHERE proposal='pending'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(lineage, ("original".into(), "original".into(), 3));
         assert!(recovery_status(&f.db).unwrap()["activation_required"] == true);
-        let details: String = f.db.query_row("SELECT details FROM proposals WHERE id='pending'", [], |r| r.get(0)).unwrap();
+        let details: String =
+            f.db.query_row(
+                "SELECT details FROM proposals WHERE id='pending'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert!(!details.contains("PRIVATE_OWNER"));
         assert!(!details.contains("PRIVATE_CHECKPOINT"));
+        activate(&f.db, &json!({"confirm_old_authority_stopped":true,"confirm_public_recovery_reviewed":true,"sync_binding":null})).unwrap();
+        let state: String = f.db.query_row("SELECT state FROM proposals WHERE id='pending'", [], |r| r.get(0)).unwrap();
+        assert_eq!(state, "coordinator_accepted");
+        let attempt: i64 = f.db.query_row("SELECT attempt FROM proposal_resolutions WHERE proposal='pending'", [], |r| r.get(0)).unwrap();
+        assert_eq!(attempt, 3, "Recovery activation must not refund resolution attempts");
     }
     #[test]
     fn preserves_queue_snapshot_without_enabling_execution() {

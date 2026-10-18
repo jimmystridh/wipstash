@@ -77,7 +77,7 @@ fn tools() -> Value {
         ),
         (
             "resolution_submit",
-            "Submit a checkpoint from the resolution workspace as a new proposal against expected_head. Requires deliberate publication approval; stale heads must be refreshed.",
+            "Submit a checkpoint from the resolution workspace as a new proposal against expected_head. Publication is explicit; follow the caller’s authorization and client approval settings. Stale heads must be refreshed.",
             vec!["workspace", "proposal", "resolution_workspace", "checkpoint", "expected_head", "resolved_conflicts", "operation_id"],
             vec!["workspace", "proposal", "resolution_workspace", "checkpoint", "expected_head", "resolved_conflicts", "operation_id"],
         ),
@@ -151,7 +151,7 @@ impl Session {
                 // Offer our supported version when the requested revision differs.
                 json!({"protocolVersion":VERSION,"capabilities":{"tools":{}},
                     "serverInfo":{"name":"wipstash-local-prototype","version":env!("CARGO_PKG_VERSION")},
-                    "instructions":"Cooperative local prototype. Stop native/unmanaged writers before checkpoint/adopt. Publication and adoption require deliberate approval. Calls are serialized; cancellation is not implemented. Use operation IDs to recover uncertain outcomes. Inspect resolution_tasks returned by status and updates. For conflicts or failed checks, use resolution_open, edit and checkpoint only the separate resolution workspace, then resolution_submit against its expected head. Never overwrite the original workspace to resolve a proposal."})
+                    "instructions":"Cooperative local prototype. Stop native/unmanaged writers before checkpoint/adopt. Publication and adoption are explicit operations; follow the caller’s authorization and client approval settings. Calls are serialized; cancellation is not implemented. Use operation IDs to recover uncertain outcomes. Inspect resolution_tasks returned by status and updates. For conflicts or failed checks, use resolution_open, edit and checkpoint only the separate resolution workspace, then resolution_submit against its expected head. Never overwrite the original workspace to resolve a proposal."})
             }
             "ping" => json!({}),
             _ if !self.ready => {
@@ -196,7 +196,10 @@ impl Session {
                             Some("string") => value.as_str().is_none_or(str::is_empty),
                             Some("integer") => value.as_u64().is_none(),
                             Some("object") => !value.is_object(),
-                            Some("array") => value.as_array().is_none_or(|a|a.len()>10000 || a.iter().any(|v|v.as_str().is_none_or(str::is_empty))),
+                            Some("array") => value.as_array().is_none_or(|a| {
+                                a.len() > 10000
+                                    || a.iter().any(|v| v.as_str().is_none_or(str::is_empty))
+                            }),
                             _ => true,
                         }
                     });
@@ -313,17 +316,19 @@ mod tests {
     }
     #[test]
     fn resolution_submit_accepts_explicit_conflict_attestation() {
-        let mut s=Session::default(); init(&mut s);
-        let args=json!({"workspace":"owner","proposal":"p","resolution_workspace":"fix","checkpoint":"cp","expected_head":"head","resolved_conflicts":["file"],"operation_id":"submit"});
+        let mut s = Session::default();
+        init(&mut s);
+        let args = json!({"workspace":"owner","proposal":"p","resolution_workspace":"fix","checkpoint":"cp","expected_head":"head","resolved_conflicts":["file"],"operation_id":"submit"});
         let result=s.handle(json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"wipstash_resolution_submit","arguments":args}}), &mut |request| {
             assert_eq!(request["op"],"resolution_submit");
             assert_eq!(request["resolved_conflicts"],json!(["file"]));
             json!({"ok":true})
         }).unwrap();
-        assert_eq!(result["result"]["isError"],false);
-        let mut bad=args;bad["resolved_conflicts"]=json!("file");
+        assert_eq!(result["result"]["isError"], false);
+        let mut bad = args;
+        bad["resolved_conflicts"] = json!("file");
         let result=s.handle(json!({"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"wipstash_resolution_submit","arguments":bad}}), &mut |_|panic!("invalid arguments executed")).unwrap();
-        assert_eq!(result["result"]["isError"],true);
+        assert_eq!(result["result"]["isError"], true);
     }
     #[test]
     fn envelope_and_argument_errors_never_execute() {

@@ -1257,7 +1257,9 @@ impl Workstation {
             }
         }
         let status = run_engine(&self.engine, &self.state, json!({"op":"sync_status"})).await?;
-        Ok(json!({"ok":true,"imports":imported,"cursor":cursor,"files_changed":false,"resolution_tasks":status["resolution_tasks"],"resolution_tasks_truncated":status["resolution_tasks_truncated"]}))
+        Ok(
+            json!({"ok":true,"imports":imported,"cursor":cursor,"files_changed":false,"resolution_tasks":status["resolution_tasks"],"resolution_tasks_truncated":status["resolution_tasks_truncated"]}),
+        )
     }
 }
 

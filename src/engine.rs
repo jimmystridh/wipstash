@@ -1,7 +1,7 @@
-#[path = "engine_sync.rs"]
-mod sync;
 #[path = "engine_resolution.rs"]
 mod resolution;
+#[path = "engine_sync.rs"]
+mod sync;
 use crate::{adoption, git::Git};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
@@ -625,8 +625,14 @@ fn checkpoint(state: &Path, db: &Connection, r: &Value) -> R<Value> {
 }
 fn publish(state: &Path, db: &Connection, r: &Value) -> R<Value> {
     let wid = field(r, "workspace")?;
-    let resolution_checkout: bool = sql(db.query_row("SELECT EXISTS(SELECT 1 FROM resolution_sessions WHERE workspace=?1)", [wid], |row| row.get(0)))?;
-    if resolution_checkout { return Err("resolution_submit_required: use resolution_submit to preserve ownership and bounded task lineage".into()); }
+    let resolution_checkout: bool = sql(db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM resolution_sessions WHERE workspace=?1)",
+        [wid],
+        |row| row.get(0),
+    ))?;
+    if resolution_checkout {
+        return Err("resolution_submit_required: use resolution_submit to preserve ownership and bounded task lineage".into());
+    }
     let _ = ws(db, wid)?;
     let cp = field(r, "checkpoint")?;
     let id = field(r, "operation_id")?;
@@ -760,7 +766,11 @@ fn integrate(state: &Path, db: &Connection, r: &Value) -> R<Value> {
                 params![id, merge.details],
             ))?;
             let task = resolution::task(db, &id)?;
-            event(db, "quarantined", &json!({"proposal":id,"resolution_task":task}))?;
+            event(
+                db,
+                "quarantined",
+                &json!({"proposal":id,"resolution_task":task}),
+            )?;
             outcomes.push(json!({"proposal":id,"state":"quarantined","reason":"conflict_or_policy_rejection","details":evaluation.details,"resolution_task":task}));
             continue;
         }
@@ -1395,9 +1405,12 @@ mod regression_tests {
             p.request(json!({"op":"checkpoint","workspace":wid,"expected_generation":0,"operation_id":format!("conflict-cp-{wid}")}));
             p.request(json!({"op":"publish","workspace":wid,"checkpoint":format!("conflict-cp-{wid}"),"intent":"conflict fixture","operation_id":format!("conflict-pub-{wid}")}));
         }
-        let outcome=p.request(json!({"op":"integrate"}));
-        assert_eq!(outcome["outcomes"][0]["state"],"integrated");
-        assert_eq!(outcome["outcomes"][1]["resolution_task"]["state"],"action_required");
+        let outcome = p.request(json!({"op":"integrate"}));
+        assert_eq!(outcome["outcomes"][0]["state"], "integrated");
+        assert_eq!(
+            outcome["outcomes"][1]["resolution_task"]["state"],
+            "action_required"
+        );
         p.request(json!({"op":"resolution_tasks","workspace":"B"}))["tasks"][0].clone()
     }
     fn open_resolution(p: &Project, name: &str) -> Value {
@@ -1405,61 +1418,90 @@ mod regression_tests {
     }
     #[test]
     fn resolution_returns_owner_task_and_keeps_private_wip_isolated() {
-        let p=Project::new();
-        let task=conflicting_task(&p);
-        assert_eq!(task["reason"],"merge_conflict");
-        assert_eq!(task["conflict_paths"],json!(["a"]));
-        fs::write(p.0.join("B/private"),"private WIP").unwrap();
-        assert!(p.request(json!({"op":"resolution_tasks","workspace":"A"}))["tasks"].as_array().unwrap().is_empty());
+        let p = Project::new();
+        let task = conflicting_task(&p);
+        assert_eq!(task["reason"], "merge_conflict");
+        assert_eq!(task["conflict_paths"], json!(["a"]));
+        fs::write(p.0.join("B/private"), "private WIP").unwrap();
+        assert!(
+            p.request(json!({"op":"resolution_tasks","workspace":"A"}))["tasks"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
         let bad=execute(&p.0.join("state"),json!({"op":"resolution_open","workspace":"A","proposal":"conflict-pub-B","resolution_workspace":"bad","path":p.0.join("bad"),"operation_id":"bad-open"})).unwrap();
-        assert_eq!(bad["error"]["code"],"resolution_owner_mismatch");
-        let opened=open_resolution(&p,"fix");
+        assert_eq!(bad["error"]["code"], "resolution_owner_mismatch");
+        let opened = open_resolution(&p, "fix");
         assert!(!p.0.join("fix/private").exists());
-        assert_eq!(fs::read_to_string(p.0.join("B/a")).unwrap(),"proposal\n");
-        assert_eq!(fs::read_to_string(p.0.join("B/private")).unwrap(),"private WIP");
-        let current=PathBuf::from(opened["side_paths"]["current"].as_str().unwrap());
-        assert_eq!(fs::read_to_string(current.join("a")).unwrap(),"current\n");
-        assert!(fs::read_to_string(p.0.join("fix/a")).unwrap().contains("<<<<<<<"));
+        assert_eq!(fs::read_to_string(p.0.join("B/a")).unwrap(), "proposal\n");
+        assert_eq!(
+            fs::read_to_string(p.0.join("B/private")).unwrap(),
+            "private WIP"
+        );
+        let current = PathBuf::from(opened["side_paths"]["current"].as_str().unwrap());
+        assert_eq!(fs::read_to_string(current.join("a")).unwrap(), "current\n");
+        assert!(fs::read_to_string(p.0.join("fix/a"))
+            .unwrap()
+            .contains("<<<<<<<"));
     }
     #[test]
     fn resolution_submit_rejects_markers_and_is_idempotent_after_fix() {
-        let p=Project::new();
+        let p = Project::new();
         conflicting_task(&p);
-        let opened=open_resolution(&p,"fix");
+        let opened = open_resolution(&p, "fix");
         p.request(json!({"op":"checkpoint","workspace":"fix","expected_generation":0,"operation_id":"marker-cp"}));
-        let request=json!({"op":"resolution_submit","workspace":"B","proposal":"conflict-pub-B","resolution_workspace":"fix","checkpoint":"marker-cp","expected_head":opened["current_head"],"resolved_conflicts":["a"],"operation_id":"marker-submit"});
-        let bad=execute(&p.0.join("state"),request).unwrap();
-        assert_eq!(bad["error"]["code"],"unresolved_conflict_markers");
-        fs::write(p.0.join("fix/a"),"explicit combined result\n").unwrap();
+        let request = json!({"op":"resolution_submit","workspace":"B","proposal":"conflict-pub-B","resolution_workspace":"fix","checkpoint":"marker-cp","expected_head":opened["current_head"],"resolved_conflicts":["a"],"operation_id":"marker-submit"});
+        let bad = execute(&p.0.join("state"), request).unwrap();
+        assert_eq!(bad["error"]["code"], "unresolved_conflict_markers");
+        fs::write(p.0.join("fix/a"), "explicit combined result\n").unwrap();
         p.request(json!({"op":"checkpoint","workspace":"fix","expected_generation":1,"operation_id":"fixed-cp"}));
         let direct=execute(&p.0.join("state"),json!({"op":"publish","workspace":"fix","checkpoint":"fixed-cp","intent":"bypass","operation_id":"bypass"})).unwrap();
-        assert_eq!(direct["error"]["code"],"resolution_submit_required");
-        let request=json!({"op":"resolution_submit","workspace":"B","proposal":"conflict-pub-B","resolution_workspace":"fix","checkpoint":"fixed-cp","expected_head":opened["current_head"],"resolved_conflicts":["a"],"operation_id":"fixed-submit"});
-        let result=p.request(request.clone());
-        assert_eq!(result["attempt"],1);
-        assert_eq!(p.request(request),result);
-        assert_eq!(p.request(json!({"op":"proposal_status","proposal":"conflict-pub-B"}))["state"],"superseded");
-        assert_eq!(p.request(json!({"op":"integrate"}))["outcomes"][0]["state"],"integrated");
-        let public=coordinator(&p.0.join("state"));
-        assert_eq!(public.run(&["show",&format!("{}:a",public.head(HEAD).unwrap())],None).unwrap(),b"explicit combined result\n");
-        assert_eq!(fs::read_to_string(p.0.join("B/a")).unwrap(),"proposal\n");
+        assert_eq!(direct["error"]["code"], "resolution_submit_required");
+        let request = json!({"op":"resolution_submit","workspace":"B","proposal":"conflict-pub-B","resolution_workspace":"fix","checkpoint":"fixed-cp","expected_head":opened["current_head"],"resolved_conflicts":["a"],"operation_id":"fixed-submit"});
+        let result = p.request(request.clone());
+        assert_eq!(result["attempt"], 1);
+        assert_eq!(p.request(request), result);
+        assert_eq!(
+            p.request(json!({"op":"proposal_status","proposal":"conflict-pub-B"}))["state"],
+            "superseded"
+        );
+        assert_eq!(
+            p.request(json!({"op":"integrate"}))["outcomes"][0]["state"],
+            "integrated"
+        );
+        let public = coordinator(&p.0.join("state"));
+        assert_eq!(
+            public
+                .run(
+                    &["show", &format!("{}:a", public.head(HEAD).unwrap())],
+                    None
+                )
+                .unwrap(),
+            b"explicit combined result\n"
+        );
+        assert_eq!(fs::read_to_string(p.0.join("B/a")).unwrap(), "proposal\n");
     }
     #[test]
     fn resolution_stale_tip_is_rejected_without_consuming_attempt() {
-        let p=Project::new();
+        let p = Project::new();
         conflicting_task(&p);
-        let opened=open_resolution(&p,"fix");
-        fs::write(p.0.join("fix/a"),"resolved\n").unwrap();
+        let opened = open_resolution(&p, "fix");
+        fs::write(p.0.join("fix/a"), "resolved\n").unwrap();
         p.request(json!({"op":"checkpoint","workspace":"fix","expected_generation":0,"operation_id":"fixed-cp"}));
-        fs::write(p.0.join("A/other"),"unrelated\n").unwrap();
+        fs::write(p.0.join("A/other"), "unrelated\n").unwrap();
         p.request(json!({"op":"checkpoint","workspace":"A","expected_generation":1,"operation_id":"other-cp"}));
         p.request(json!({"op":"publish","workspace":"A","checkpoint":"other-cp","intent":"unrelated","operation_id":"other-pub"}));
-        assert_eq!(p.request(json!({"op":"integrate"}))["outcomes"][0]["state"],"integrated");
+        assert_eq!(
+            p.request(json!({"op":"integrate"}))["outcomes"][0]["state"],
+            "integrated"
+        );
         let result=execute(&p.0.join("state"),json!({"op":"resolution_submit","workspace":"B","proposal":"conflict-pub-B","resolution_workspace":"fix","checkpoint":"fixed-cp","expected_head":opened["current_head"],"resolved_conflicts":["a"],"operation_id":"stale-submit"})).unwrap();
-        assert_eq!(result["error"]["code"],"stale_resolution");
-        let task=p.request(json!({"op":"resolution_tasks","workspace":"B"}))["tasks"][0].clone();
-        assert_eq!(task["attempt"],0);
-        assert_ne!(open_resolution(&p,"fresh")["current_head"],opened["current_head"]);
+        assert_eq!(result["error"]["code"], "stale_resolution");
+        let task = p.request(json!({"op":"resolution_tasks","workspace":"B"}))["tasks"][0].clone();
+        assert_eq!(task["attempt"], 0);
+        assert_ne!(
+            open_resolution(&p, "fresh")["current_head"],
+            opened["current_head"]
+        );
     }
-
 }
