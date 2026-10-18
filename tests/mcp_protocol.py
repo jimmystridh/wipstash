@@ -37,7 +37,10 @@ with tempfile.TemporaryDirectory(prefix="wipstash-mcp-") as directory:
         # A tools/call notification must never execute, even after initialization.
         send({"jsonrpc": "2.0", "method": "tools/call", "params": {"name": "wipstash", "arguments": {"request": {"op": "status"}}}})
         tools = request("list", "tools/list")["result"]["tools"]
-        assert {tool["name"] for tool in tools} >= {"wipstash", "wipstash_status", "wipstash_checkpoint", "wipstash_adopt"}
+        assert {tool["name"] for tool in tools} >= {"wipstash", "wipstash_status", "wipstash_checkpoint", "wipstash_adopt", "wipstash_resolution_tasks", "wipstash_resolution_open", "wipstash_resolution_submit"}
+        schemas = {tool["name"]: tool for tool in tools}
+        assert schemas["wipstash_resolution_tasks"]["annotations"]["readOnlyHint"] is True
+        assert "resolved_conflicts" in schemas["wipstash_resolution_submit"]["inputSchema"]["required"]
         assert not (Path(directory) / "state").exists(), "notification executed engine"
         # Hostile envelopes are rejected with a null ID; no batch is executed.
         for invalid in [None, 42, [], [{"jsonrpc": "2.0", "id": 99, "method": "ping"}],

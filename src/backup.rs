@@ -170,7 +170,10 @@ fn proposal_metadata(db: &Connection, proposals: &ProposalMap) -> R<Value> {
             } else {
                 json!({"kind":"local_authority","device":null,"source_proposal":id})
             };
-            records.insert(id,json!({"state":state,"base":if oid(&base){Some(base)}else{None},"head":head.filter(|h|oid(h)),"queue_order":order,"intent":intent,"original_state":saved.get("original_state").or_else(||saved.get("state")).cloned().unwrap_or(json!(state)),"ownership":ownership,"evidence":evidence,"repaired":repaired,"policy_sha256":policy_sha256}));
+            let resolution = if table_exists(db, "proposal_resolutions")? {
+                sql(db.query_row("SELECT parent,root,attempt FROM proposal_resolutions WHERE proposal=?1", [&id], |r| Ok(json!({"parent":r.get::<_,String>(0)?,"root":r.get::<_,String>(1)?,"attempt":r.get::<_,i64>(2)?}))).optional())?
+            } else { None };
+            records.insert(id,json!({"state":state,"base":if oid(&base){Some(base)}else{None},"head":head.filter(|h|oid(h)),"queue_order":order,"intent":intent,"original_state":saved.get("original_state").or_else(||saved.get("state")).cloned().unwrap_or(json!(state)),"ownership":ownership,"evidence":evidence,"repaired":repaired,"policy_sha256":policy_sha256,"resolution":resolution}));
         }
     }
     Ok(Value::Object(records))
@@ -185,9 +188,18 @@ fn public_state(state: &str) -> bool {
             | "integrated"
             | "already_included"
             | "cancelled"
+            | "superseded"
     )
 }
 fn validate_provenance(p: &Value) -> R<()> {
+    if let Some(r) = p.get("resolution").filter(|r| !r.is_null()) {
+        if r.as_object().is_none_or(|o| o.len() != 3 || o.keys().any(|k| !matches!(k.as_str(), "parent" | "root" | "attempt")))
+            || !r["parent"].as_str().is_some_and(identifier)
+            || !r["root"].as_str().is_some_and(identifier)
+            || !r["attempt"].as_u64().is_some_and(|n| (1..=3).contains(&n)) {
+            return Err("invalid_public_resolution_lineage".into());
+        }
+    }
     if p.get("original_state")
         .is_some_and(|v| !v.as_str().is_some_and(public_state))
     {
@@ -257,6 +269,7 @@ fn validate_metadata(value: &Value, proposals: &ProposalMap) -> R<()> {
                             | "repaired"
                             | "policy_sha256"
                             | "original_state"
+                            | "resolution"
                     )
                 })
             })
@@ -319,7 +332,7 @@ fn validate_public_events(g: &Git, manifest: &Value, proposals: &ProposalMap, ro
                     }
                 }
             }
-            "cancelled" => {
+            "cancelled" | "superseded" => {
                 let id = id.ok_or("backup_invalid_cancelled_proposal")?;
                 if terminal.insert(id.to_owned(), kind.to_owned()).is_some() {
                     return Err("backup_inconsistent_terminal_events".into());
@@ -338,7 +351,8 @@ fn validate_public_events(g: &Git, manifest: &Value, proposals: &ProposalMap, ro
                 }
             }
             let state = record["state"].as_str().unwrap();
-            if matches!(state, "integrated" | "already_included" | "cancelled")
+            if matches!(state, "integrated" | "already_included" | "cancelled"
+            | "superseded")
                 && terminal.get(id).map(String::as_str) != Some(state)
                 || terminal.get(id).is_some_and(|t| t != state)
             {
@@ -514,7 +528,7 @@ fn recovery_metadata(db: &Connection, proposals: &ProposalMap) -> R<Value> {
             .map_err(|e| e.to_string())?;
         if !matches!(
             request["op"].as_str(),
-            Some("publish" | "cancel" | "retry_proposal" | "recovered_public_operation")
+            Some("publish" | "resolution_submit" | "cancel" | "retry_proposal" | "recovered_public_operation")
         ) || r["result"].is_null()
         {
             continue;
@@ -580,6 +594,40 @@ pub(crate) fn validate_recovery(v: &Value) -> R<()> {
     fn positive(v: &Value) -> bool {
         v.as_i64().is_some_and(|n| n > 0)
     }
+fn task(t: &Value) -> R<()> {
+    keys(t, &["proposal","workspace","state","reason","base","proposal_commit","current_head","conflict_paths","checks","policy_sha256","attempt","max_attempts","lineage","next_action","semantic_correctness_claimed"])?;
+    if !id(&t["proposal"]) { return Err("invalid_resolution_proposal".into()); }
+    if !t["workspace"].is_null() || !matches!(t["state"].as_str(),Some("action_required"|"escalated")) || !matches!(t["reason"].as_str(),Some("merge_conflict"|"required_checks_failed"|"policy_evaluation_failed")) || t["semantic_correctness_claimed"] != false || t["max_attempts"] != 3 || !t["attempt"].as_u64().is_some_and(|n| n<=3) { return Err("invalid_resolution_task".into()); }
+    for key in ["base","proposal_commit","current_head"] {
+        if !t[key].as_str().is_some_and(oid) { return Err("invalid_resolution_task_oid".into()); }
+    }
+    if !t["policy_sha256"].as_str().is_some_and(|s|s.len()==64 && s.bytes().all(|b|b.is_ascii_hexdigit())) || !t["next_action"].as_str().is_some_and(|s|s.len()<=1024) {return Err("invalid_resolution_task".into());}
+    let paths=t["conflict_paths"].as_array().ok_or("invalid_resolution_paths")?;
+    if paths.len()>10000 { return Err("invalid_resolution_paths".into()); }
+    let mut seen=std::collections::HashSet::new();
+    for p in paths {let p=p.as_str().ok_or("invalid_resolution_paths")?; if p.len()>4096 || !seen.insert(p) {return Err("invalid_resolution_paths".into());} if p.is_empty() || p.starts_with('/') || p.contains('\\') || p.chars().any(char::is_control) || p.split('/').any(|s| s.is_empty() || matches!(s,"."|"..")) {return Err("invalid_resolution_paths".into());}}
+    keys(&t["lineage"], &["parent","root","attempt"])?;
+    if !id(&t["lineage"]["root"]) { return Err("invalid_resolution_root".into()); }
+    if !t["lineage"]["parent"].is_null() {if !id(&t["lineage"]["parent"]) { return Err("invalid_resolution_parent".into()); }}
+    if t["lineage"]["attempt"]!=t["attempt"] {return Err("invalid_resolution_lineage".into());}
+    let checks=t["checks"].as_array().ok_or("invalid_resolution_checks")?;
+    if checks.len()>64 {return Err("invalid_resolution_checks".into());}
+    for c in checks {
+        keys(c, &["id_sha256","required","success","exit_code","timed_out","checkout_unchanged","stdout_prefix_sha256","stderr_prefix_sha256","stdout_bytes","stderr_bytes","output_truncated","output_collection_complete","execution_is_os_sandboxed"])?;
+        for (key,v) in c.as_object().ok_or("invalid_resolution_checks")? {
+            let valid = match key.as_str() {
+                "id_sha256"|"stdout_prefix_sha256"|"stderr_prefix_sha256" => v.as_str().is_some_and(|s|s.len()==64 && s.bytes().all(|b|b.is_ascii_hexdigit())),
+                "candidate_tree" => v.as_str().is_some_and(oid),
+                "stdout_bytes"|"stderr_bytes" => v.as_u64().is_some(),
+                "exit_code" => v.is_null() || v.as_i64().is_some_and(|n|i32::try_from(n).is_ok()),
+                _ => v.is_boolean(),
+            };
+            if !valid {return Err("invalid_resolution_checks".into());}
+        }
+    }
+    if serde_json::to_vec(t).map_err(|e|e.to_string())?.len()>8192 {return Err("resolution_task_too_large".into());}
+    Ok(())
+}
     fn receipt(v: &Value) -> R<()> {
         keys(
             v,
@@ -591,6 +639,7 @@ pub(crate) fn validate_recovery(v: &Value) -> R<()> {
                 "integration_head",
                 "evidence",
                 "repaired",
+                "resolution_task",
             ],
         )?;
         if !id(&v["recipient"])
@@ -604,6 +653,7 @@ pub(crate) fn validate_recovery(v: &Value) -> R<()> {
                         | "integrated"
                         | "already_included"
                         | "cancelled"
+            | "superseded"
                 )
             )
             || (matches!(v["state"].as_str(), Some("integrated" | "already_included"))
@@ -619,6 +669,10 @@ pub(crate) fn validate_recovery(v: &Value) -> R<()> {
                 && !v["integration_head"].as_str().is_some_and(oid))
         {
             return Err("invalid_public_receipt".into());
+        }
+        if let Some(t) = v.get("resolution_task").filter(|t| !t.is_null()) {
+            if v["state"] != "quarantined" { return Err("invalid_resolution_task_state".into()); }
+            task(t)?;
         }
         Ok(())
     }
@@ -888,6 +942,7 @@ pub(crate) fn validate_recovery(v: &Value) -> R<()> {
                             "intent",
                             "envelope",
                             "receipt",
+                            "resolution",
                             "payload_len",
                             "payload_sha256",
                         ],
@@ -912,6 +967,10 @@ pub(crate) fn validate_recovery(v: &Value) -> R<()> {
                     {
                         return Err("invalid_public_manifest_proposal".into());
                     }
+                    if !m["resolution"].is_null() {
+                        if m["kind"] != "proposal" { return Err("invalid_public_manifest_resolution".into()); }
+                        validate_provenance(&serde_json::json!({"resolution":m["resolution"]}))?;
+                    }
                     let shape_ok = match m["kind"].as_str() {
                         Some("head") => {
                             m["base"].is_null()
@@ -933,7 +992,7 @@ pub(crate) fn validate_recovery(v: &Value) -> R<()> {
                                 && m["intent"].is_null()
                                 && m["envelope"].is_null()
                                 && m["receipt"].is_object()
-                                && m["payload_len"] == 0
+                                && (m["receipt"]["resolution_task"].is_object() || m["payload_len"] == 0)
                         }
                         _ => false,
                     };
@@ -942,6 +1001,11 @@ pub(crate) fn validate_recovery(v: &Value) -> R<()> {
                     }
                     if !m["receipt"].is_null() {
                         receipt(&m["receipt"])?;
+                        if let Some(task) = m["receipt"].get("resolution_task").filter(|t| !t.is_null()) {
+                            if task["proposal"] != m["proposal"] || task["base"] != m["base"] || task["proposal_commit"] != m["head"] {
+                                return Err("invalid_public_task_binding".into());
+                            }
+                        }
                     }
                     let e = &m["envelope"];
                     if !e.is_null() {
@@ -1054,6 +1118,9 @@ fn validate_recovery_links(m: &Value, proposals: &BTreeMap<String, String>) -> R
                     if let Some(o) = result["remote_observation"]["integration_head"].as_str() {
                         objects.push(o.into());
                     }
+                    for key in ["proposal_commit", "current_head"] {
+                        if let Some(o) = result["remote_observation"]["resolution_task"][key].as_str() { objects.push(o.into()); }
+                    }
                 }
                 "observations" => {
                     if !known(&r["proposal"]) {
@@ -1061,6 +1128,9 @@ fn validate_recovery_links(m: &Value, proposals: &BTreeMap<String, String>) -> R
                     }
                     if let Some(o) = r["receipt"]["integration_head"].as_str() {
                         objects.push(o.into());
+                    }
+                    for key in ["proposal_commit", "current_head"] {
+                        if let Some(o) = r["receipt"]["resolution_task"][key].as_str() { objects.push(o.into()); }
                     }
                 }
                 "repair_budgets" => {
@@ -1101,6 +1171,9 @@ fn validate_recovery_links(m: &Value, proposals: &BTreeMap<String, String>) -> R
                     if let Some(o) = e["receipt"]["integration_head"].as_str() {
                         objects.push(o.into());
                     }
+                    for key in ["proposal_commit", "current_head"] {
+                        if let Some(o) = e["receipt"]["resolution_task"][key].as_str() { objects.push(o.into()); }
+                    }
                 }
                 _ => unreachable!(),
             }
@@ -1122,7 +1195,7 @@ fn validate_recovery_links(m: &Value, proposals: &BTreeMap<String, String>) -> R
     Ok(objects)
 }
 fn export(db: &Connection, watermark: i64, root: &str, proposals: &ProposalMap) -> R<Vec<u8>> {
-    let mut stmt=sql(db.prepare("SELECT seq,kind,data FROM events WHERE seq<=?1 AND kind IN ('integrated','already_included','published','cancelled') ORDER BY seq"))?;
+    let mut stmt=sql(db.prepare("SELECT seq,kind,data FROM events WHERE seq<=?1 AND kind IN ('integrated','already_included','published','cancelled','superseded') ORDER BY seq"))?;
     let rows = sql(stmt.query_map([watermark], |r| {
         Ok((
             r.get::<_, i64>(0)?,
@@ -1665,6 +1738,24 @@ mod tests {
             let _ = fs::remove_dir_all(&self.dir);
         }
     }
+    #[test]
+    fn resolution_receipts_allow_only_sanitized_bounded_tasks() {
+        let task = serde_json::json!({"proposal":"p","workspace":null,"state":"action_required","reason":"merge_conflict","base":"a".repeat(40),"proposal_commit":"b".repeat(40),"current_head":"c".repeat(40),"conflict_paths":["file.rs"],"checks":[{"id_sha256":"d".repeat(64),"success":false}],"policy_sha256":"e".repeat(64),"attempt":0,"max_attempts":3,"lineage":{"parent":null,"root":"p","attempt":0},"next_action":"Open isolated checkout","semantic_correctness_claimed":false});
+        let receipt = serde_json::json!({"recipient":"device","authority_proposal":"remote-p","revision":1,"state":"quarantined","integration_head":null,"evidence":"unchecked","repaired":false,"resolution_task":task});
+        let mut recovery = serde_json::json!({"version":2,"activation_required":true,"policy_sha256":"a".repeat(64),"policy_required":false,"sync_binding":null,"origins":[],"imports":[],"exports":[],"observations":[{"proposal":"p","revision":1,"digest":"f".repeat(64),"receipt":receipt}],"repair_budgets":[],"operations":[]});
+        validate_recovery(&recovery).unwrap();
+        for field in ["spawn_error", "stdout", "argv", "candidate_tree"] {
+            let mut invalid = recovery.clone();
+            invalid["observations"][0]["receipt"]["resolution_task"]["checks"][0][field] = serde_json::json!("PRIVATE_CANARY");
+            assert!(validate_recovery(&invalid).is_err(), "accepted {field}");
+        }
+        recovery["observations"][0]["receipt"]["resolution_task"]["workspace"] = serde_json::json!("PRIVATE_OWNER");
+        assert!(validate_recovery(&recovery).is_err());
+        for attempt in [0,4] {
+            assert!(validate_provenance(&serde_json::json!({"resolution":{"parent":"p","root":"p","attempt":attempt}})).is_err());
+        }
+    }
+
     #[test]
     fn queue_metadata_is_sanitized_and_state_only_changes_are_flushed() {
         let f = Fixture::new();

@@ -8,7 +8,7 @@ Four bots can work on one project without sharing one working directory, publish
 
 **Private WIP → deliberate publish → autonomous integration → deliberate adopt.**
 
-Wipstash is a Rust prototype with a working local collaboration loop, a JSON CLI, stdio MCP, and explicit source exchange between independent client and authority stores. Start with the disposable demo below. The tested operating profile is cooperative Linux; native platform, TLS service, and remote backup work are experimental. [Exact scope and release gates →](docs/SCOPE.md)
+Wipstash is a Rust prototype with a working local collaboration loop, a JSON CLI, stdio MCP, and explicit source exchange between independent client and authority stores. Start with the disposable demo below. The operating profile remains cooperative; selected native Linux/macOS/Windows and real loopback TLS contracts have passed at the revisions recorded in the scope document. Broader platform, deployed network and remote backup acceptance remain open. [Exact scope and release gates →](docs/SCOPE.md)
 
 ## Inspect the work
 
@@ -130,9 +130,11 @@ Imagine one bot changing an API, one updating its caller, one writing tests, and
 
 1. Each gets an ordinary directory and checkpoints its own WIP. Their private histories can be as messy as they need.
 2. The API bot publishes one chosen snapshot. Later edits stay private until separately published.
-3. The worker integrates it. If the caller bot's proposal conflicts, that proposal is quarantined; the docs change can still land.
+3. The worker integrates it. If the caller bot's proposal conflicts, the caller gets an actionable resolution task; the docs change can still land. The caller opens a separate public-snapshot checkout, resolves and checkpoints the selected change, then explicitly submits a replacement proposal. Its original private WIP stays untouched.
 4. The test bot checks for updates and adopts when ready. If adoption conflicts with its private work, the live workspace stays unchanged and an explicit resolution path is available.
-5. Everyone can inspect proposal status and operation records instead of guessing what a timeout meant.
+5. Everyone can inspect proposal status and operation records instead of guessing what a timeout meant. Resolution retries are bounded, stale shared tips require a fresh review, and configured checks run again before promotion.
+
+Keep publications small and intentional. Conflicts are returned to the submitting agent through status/updates and MCP; Wipstash does not start a background model session to fix them. [Conflict handback and safe Codex/Claude workflow →](docs/CONFLICTS.md)
 
 That is the workflow the test harness exercises with **four deterministic scripted actors**. Claude Code stdio initialization and tool discovery have been verified; actual model-driven Codex/Claude workflows and arbitrary native-writer containment remain release gates.
 
@@ -171,9 +173,10 @@ Git remains the storage and merge foundation. Wipstash adds the boundary between
 | Private checkpoints, publication, integration, adoption | Implemented and exercised with real CLI/Git/SQLite on Linux; cooperative writers required |
 | Independent stores and receipts | Implemented explicit artifact exchange, ordered replay, object verification, and targeted proposal observations |
 | CLI and stdio MCP | Implemented; Claude Code 2.1.302 stdio handshake/tool discovery verified, Codex configuration parsing verified; model-driven workflows remain unverified |
+| Conflict handback | Explicit isolated resolution checkout, checkpoint and replacement submission; bounded attempts and stale-tip validation. See [workflow and evidence boundary](docs/CONFLICTS.md) |
 | Checks and repair | Empty by default; durable repair budgets and confined-or-unavailable repair dispatch. Linux sandbox execution is not verified in this environment; no bundled model worker |
 | Public recovery | Version 2 preserves public intent, ownership, queue order, operation identity and replay metadata; restored execution stays fenced until explicit operator activation. Private WIP is excluded |
-| Authenticated transport | mTLS service/client implementation, certificate ACLs and resumable uploads; in-memory security and transfer tests. Deployed multi-machine acceptance remains open |
+| Authenticated transport | mTLS service/client implementation, certificate ACLs and resumable uploads; in-memory contracts plus commit-specific native-CI loopback pairing and real-TLS upload-fault evidence. Deployed multi-machine acceptance remains open |
 | Storage | Conservative loose-object collection and storage admission; no automatic expiry of private checkpoints or acknowledged uploads, no power-loss guarantee |
 | Native platform and GitHub backup | Selected native process, Git-path, storage and resumable-transfer contracts run on Linux/macOS/Windows CI; asynchronous GitHub backup components exist. Full native adoption, real remote credentials and fresh-host recovery remain gates |
 | Supported deployment | Development/evaluation on Linux; production, native macOS/Windows, and multi-machine release gates remain open |

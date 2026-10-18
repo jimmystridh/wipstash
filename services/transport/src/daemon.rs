@@ -239,7 +239,7 @@ impl<T: PeerSync> Worker<T> {
                     } else {
                         entry.terminal = matches!(
                             v["remote_observation"]["state"].as_str(),
-                            Some("integrated" | "already_included" | "cancelled")
+                            Some("integrated" | "already_included" | "cancelled" | "superseded")
                         );
                     }
                     entry.failures = 0;
@@ -285,8 +285,9 @@ impl<T: PeerSync> Worker<T> {
             }
             self.save()?;
         }
+        let status = run_engine(&self.engine, &self.state, json!({"op":"sync_status"})).await?;
         Ok(
-            json!({"ok":true,"failures":failures,"tracked":self.journal.entries.len(),"files_changed":false}),
+            json!({"ok":true,"failures":failures,"tracked":self.journal.entries.len(),"files_changed":false,"resolution_tasks":status["resolution_tasks"],"resolution_tasks_truncated":status["resolution_tasks_truncated"]}),
         )
     }
     pub async fn run(&mut self) -> Result<()> {

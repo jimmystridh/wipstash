@@ -1,5 +1,7 @@
 #[path = "engine_sync.rs"]
 mod sync;
+#[path = "engine_resolution.rs"]
+mod resolution;
 use crate::{adoption, git::Git};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
@@ -118,6 +120,7 @@ fn init_db(db: &Connection) -> R<()> {
  CREATE TABLE IF NOT EXISTS commands(id TEXT PRIMARY KEY,workspace TEXT NOT NULL REFERENCES workspaces(id),state TEXT NOT NULL,generation INTEGER NOT NULL);
  CREATE TABLE IF NOT EXISTS events(seq INTEGER PRIMARY KEY AUTOINCREMENT,kind TEXT NOT NULL,data TEXT NOT NULL);
  PRAGMA user_version=1;"))?;
+    resolution::schema(db)?;
     Ok(())
 }
 fn recover(state: &Path, db: &Connection, local_only: bool) -> R<()> {
@@ -325,6 +328,8 @@ pub fn execute(state: &Path, r: Value) -> R<Value> {
                 | "publish"
                 | "integrate"
                 | "retry_proposal"
+                | "resolution_open"
+                | "resolution_submit"
                 | "cancel"
                 | "backup_flush"
                 | "backup_tick"
@@ -377,6 +382,8 @@ pub fn execute(state: &Path, r: Value) -> R<Value> {
             | "command_recover"
             | "configure"
             | "resolve_adoption"
+            | "resolution_open"
+            | "resolution_submit"
             | "backup_flush"
             | "retry_proposal"
             | "sync_initialize_authority"
@@ -431,6 +438,9 @@ pub fn execute(state: &Path, r: Value) -> R<Value> {
         "sync_add_peer" => sync::add_peer(&db, &r),
         "sync_pending" => sync::pending(&db, &r),
         "sync_export_current_head" => sync::export_current_head(state, &db, &r),
+        "resolution_tasks" => resolution::tasks(&db, &r),
+        "resolution_open" => resolution::open(state, &db, &r),
+        "resolution_submit" => resolution::submit(state, &db, &r),
         "open" => open(state, &db, &r),
         "status" => status(state, &db, &r),
         "checkpoint" => checkpoint(state, &db, &r),
@@ -450,7 +460,7 @@ pub fn execute(state: &Path, r: Value) -> R<Value> {
                 git.head(HEAD)?
             };
             Ok(
-                json!({"ok":true,"adopted":w.base,"latest":latest,"coordinator_online":online && !sync::is_client(&db)?,"cached":!online || sync::is_client(&db)?,"remote_contact_unverified":sync::is_client(&db)?,"generation":w.generation,"files_changed":false}),
+                json!({"ok":true,"adopted":w.base,"latest":latest,"coordinator_online":online && !sync::is_client(&db)?,"cached":!online || sync::is_client(&db)?,"remote_contact_unverified":sync::is_client(&db)?,"generation":w.generation,"files_changed":false,"resolution_tasks":resolution::tasks(&db,&r)?["tasks"]}),
             )
         }
         "operation_status" => {
@@ -615,6 +625,8 @@ fn checkpoint(state: &Path, db: &Connection, r: &Value) -> R<Value> {
 }
 fn publish(state: &Path, db: &Connection, r: &Value) -> R<Value> {
     let wid = field(r, "workspace")?;
+    let resolution_checkout: bool = sql(db.query_row("SELECT EXISTS(SELECT 1 FROM resolution_sessions WHERE workspace=?1)", [wid], |row| row.get(0)))?;
+    if resolution_checkout { return Err("resolution_submit_required: use resolution_submit to preserve ownership and bounded task lineage".into()); }
     let _ = ws(db, wid)?;
     let cp = field(r, "checkpoint")?;
     let id = field(r, "operation_id")?;
@@ -723,7 +735,10 @@ fn integrate(state: &Path, db: &Connection, r: &Value) -> R<Value> {
             !merge.clean,
             &merge.conflicts,
             &policy,
-        )?;
+        ).unwrap_or_else(|error| crate::policy::Evaluation {
+            tree: merge.tree.clone(), accepted: false, repaired: false,
+            details: json!({"head":head,"proposal":p,"input_tree":merge.tree,"candidate_tree":merge.tree,"conflicted":!merge.clean,"conflict_paths":merge.conflicts,"policy_sha256":digest(&policy),"checks":[],"accepted":false,"evaluation_error":error,"semantic_correctness_claimed":false}),
+        });
         let candidate_id = format!(
             "candidate-{}",
             digest(&json!({"proposal":id,"head":head,"evidence":evaluation.details}))
@@ -744,8 +759,9 @@ fn integrate(state: &Path, db: &Connection, r: &Value) -> R<Value> {
                 "UPDATE proposals SET state='quarantined',details=?2 WHERE id=?1",
                 params![id, merge.details],
             ))?;
-            event(db, "quarantined", &json!({"proposal":id}))?;
-            outcomes.push(json!({"proposal":id,"state":"quarantined","reason":"conflict_or_policy_rejection","details":evaluation.details}));
+            let task = resolution::task(db, &id)?;
+            event(db, "quarantined", &json!({"proposal":id,"resolution_task":task}))?;
+            outcomes.push(json!({"proposal":id,"state":"quarantined","reason":"conflict_or_policy_rejection","details":evaluation.details,"resolution_task":task}));
             continue;
         }
         if merge.tree == git.tree(&head)? {
@@ -898,7 +914,7 @@ fn status(state: &Path, db: &Connection, r: &Value) -> R<Value> {
             Some(tree != saved)
         };
         Ok(
-            json!({"ok":true,"workspace":wid,"path":w.path,"adopted":w.base,"latest":head,"cached_head":git.head(HEAD).ok(),"coordinator_online":head.is_some() && !sync::is_client(db)?,"remote_contact_unverified":sync::is_client(db)?,"public_store_role":if sync::is_client(db)?{"client_cache"}else{"authority"},"checkpoint_commit":w.checkpoint,"generation":w.generation,"dirty":dirty,"replication":"not_configured","profile":"cooperative-local","writer_recovery_required":fenced}),
+            json!({"ok":true,"workspace":wid,"path":w.path,"adopted":w.base,"latest":head,"cached_head":git.head(HEAD).ok(),"coordinator_online":head.is_some() && !sync::is_client(db)?,"remote_contact_unverified":sync::is_client(db)?,"public_store_role":if sync::is_client(db)?{"client_cache"}else{"authority"},"checkpoint_commit":w.checkpoint,"generation":w.generation,"dirty":dirty,"replication":"not_configured","profile":"cooperative-local","writer_recovery_required":fenced,"resolution_tasks":resolution::tasks(db,r)?["tasks"]}),
         )
     } else {
         let count: i64 = sql(db.query_row("SELECT COUNT(*) FROM workspaces", [], |r| r.get(0)))?;
@@ -934,11 +950,11 @@ fn proposal_status(db: &Connection, id: &str) -> R<Value> {
     };
     if let Some(observed) = sync::observed_status(db, id)? {
         return Ok(
-            json!({"ok":true,"proposal":id,"state":observed["state"],"local_state":state,"commit":commit,"head":observed["integration_head"],"evidence":observed["evidence"],"remote_observation":observed,"details":null}),
+            json!({"ok":true,"proposal":id,"state":observed["state"],"local_state":state,"commit":commit,"head":observed["integration_head"],"evidence":observed["evidence"],"remote_observation":observed,"details":null,"resolution_task":resolution::task(db,id)?}),
         );
     }
     Ok(
-        json!({"ok":true,"proposal":id,"state":state,"commit":commit,"head":head,"details":detail,"evidence":evidence,"origin":sync::proposal_origin(db,id)?}),
+        json!({"ok":true,"proposal":id,"state":state,"commit":commit,"head":head,"details":detail,"evidence":evidence,"origin":sync::proposal_origin(db,id)?,"resolution_task":resolution::task(db,id)?,"resolution":resolution::lineage(db,id)?}),
     )
 }
 fn events(db: &Connection, cursor: i64) -> R<Value> {
@@ -1373,4 +1389,77 @@ mod regression_tests {
             .unwrap();
         assert_eq!(phase, "rolled_back");
     }
+    fn conflicting_task(p: &Project) -> Value {
+        for (wid, text) in [("A", "current\n"), ("B", "proposal\n")] {
+            fs::write(p.0.join(wid).join("a"), text).unwrap();
+            p.request(json!({"op":"checkpoint","workspace":wid,"expected_generation":0,"operation_id":format!("conflict-cp-{wid}")}));
+            p.request(json!({"op":"publish","workspace":wid,"checkpoint":format!("conflict-cp-{wid}"),"intent":"conflict fixture","operation_id":format!("conflict-pub-{wid}")}));
+        }
+        let outcome=p.request(json!({"op":"integrate"}));
+        assert_eq!(outcome["outcomes"][0]["state"],"integrated");
+        assert_eq!(outcome["outcomes"][1]["resolution_task"]["state"],"action_required");
+        p.request(json!({"op":"resolution_tasks","workspace":"B"}))["tasks"][0].clone()
+    }
+    fn open_resolution(p: &Project, name: &str) -> Value {
+        p.request(json!({"op":"resolution_open","workspace":"B","proposal":"conflict-pub-B","resolution_workspace":name,"path":p.0.join(name),"operation_id":format!("open-{name}")}))
+    }
+    #[test]
+    fn resolution_returns_owner_task_and_keeps_private_wip_isolated() {
+        let p=Project::new();
+        let task=conflicting_task(&p);
+        assert_eq!(task["reason"],"merge_conflict");
+        assert_eq!(task["conflict_paths"],json!(["a"]));
+        fs::write(p.0.join("B/private"),"private WIP").unwrap();
+        assert!(p.request(json!({"op":"resolution_tasks","workspace":"A"}))["tasks"].as_array().unwrap().is_empty());
+        let bad=execute(&p.0.join("state"),json!({"op":"resolution_open","workspace":"A","proposal":"conflict-pub-B","resolution_workspace":"bad","path":p.0.join("bad"),"operation_id":"bad-open"})).unwrap();
+        assert_eq!(bad["error"]["code"],"resolution_owner_mismatch");
+        let opened=open_resolution(&p,"fix");
+        assert!(!p.0.join("fix/private").exists());
+        assert_eq!(fs::read_to_string(p.0.join("B/a")).unwrap(),"proposal\n");
+        assert_eq!(fs::read_to_string(p.0.join("B/private")).unwrap(),"private WIP");
+        let current=PathBuf::from(opened["side_paths"]["current"].as_str().unwrap());
+        assert_eq!(fs::read_to_string(current.join("a")).unwrap(),"current\n");
+        assert!(fs::read_to_string(p.0.join("fix/a")).unwrap().contains("<<<<<<<"));
+    }
+    #[test]
+    fn resolution_submit_rejects_markers_and_is_idempotent_after_fix() {
+        let p=Project::new();
+        conflicting_task(&p);
+        let opened=open_resolution(&p,"fix");
+        p.request(json!({"op":"checkpoint","workspace":"fix","expected_generation":0,"operation_id":"marker-cp"}));
+        let request=json!({"op":"resolution_submit","workspace":"B","proposal":"conflict-pub-B","resolution_workspace":"fix","checkpoint":"marker-cp","expected_head":opened["current_head"],"resolved_conflicts":["a"],"operation_id":"marker-submit"});
+        let bad=execute(&p.0.join("state"),request).unwrap();
+        assert_eq!(bad["error"]["code"],"unresolved_conflict_markers");
+        fs::write(p.0.join("fix/a"),"explicit combined result\n").unwrap();
+        p.request(json!({"op":"checkpoint","workspace":"fix","expected_generation":1,"operation_id":"fixed-cp"}));
+        let direct=execute(&p.0.join("state"),json!({"op":"publish","workspace":"fix","checkpoint":"fixed-cp","intent":"bypass","operation_id":"bypass"})).unwrap();
+        assert_eq!(direct["error"]["code"],"resolution_submit_required");
+        let request=json!({"op":"resolution_submit","workspace":"B","proposal":"conflict-pub-B","resolution_workspace":"fix","checkpoint":"fixed-cp","expected_head":opened["current_head"],"resolved_conflicts":["a"],"operation_id":"fixed-submit"});
+        let result=p.request(request.clone());
+        assert_eq!(result["attempt"],1);
+        assert_eq!(p.request(request),result);
+        assert_eq!(p.request(json!({"op":"proposal_status","proposal":"conflict-pub-B"}))["state"],"superseded");
+        assert_eq!(p.request(json!({"op":"integrate"}))["outcomes"][0]["state"],"integrated");
+        let public=coordinator(&p.0.join("state"));
+        assert_eq!(public.run(&["show",&format!("{}:a",public.head(HEAD).unwrap())],None).unwrap(),b"explicit combined result\n");
+        assert_eq!(fs::read_to_string(p.0.join("B/a")).unwrap(),"proposal\n");
+    }
+    #[test]
+    fn resolution_stale_tip_is_rejected_without_consuming_attempt() {
+        let p=Project::new();
+        conflicting_task(&p);
+        let opened=open_resolution(&p,"fix");
+        fs::write(p.0.join("fix/a"),"resolved\n").unwrap();
+        p.request(json!({"op":"checkpoint","workspace":"fix","expected_generation":0,"operation_id":"fixed-cp"}));
+        fs::write(p.0.join("A/other"),"unrelated\n").unwrap();
+        p.request(json!({"op":"checkpoint","workspace":"A","expected_generation":1,"operation_id":"other-cp"}));
+        p.request(json!({"op":"publish","workspace":"A","checkpoint":"other-cp","intent":"unrelated","operation_id":"other-pub"}));
+        assert_eq!(p.request(json!({"op":"integrate"}))["outcomes"][0]["state"],"integrated");
+        let result=execute(&p.0.join("state"),json!({"op":"resolution_submit","workspace":"B","proposal":"conflict-pub-B","resolution_workspace":"fix","checkpoint":"fixed-cp","expected_head":opened["current_head"],"resolved_conflicts":["a"],"operation_id":"stale-submit"})).unwrap();
+        assert_eq!(result["error"]["code"],"stale_resolution");
+        let task=p.request(json!({"op":"resolution_tasks","workspace":"B"}))["tasks"][0].clone();
+        assert_eq!(task["attempt"],0);
+        assert_ne!(open_resolution(&p,"fresh")["current_head"],opened["current_head"]);
+    }
+
 }

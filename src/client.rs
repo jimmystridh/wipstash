@@ -64,6 +64,24 @@ fn tools() -> Value {
             vec!["proposal"],
         ),
         (
+            "resolution_tasks",
+            "Read actionable conflict or failed-check tasks for this workspace. Resolve only in a separate resolution checkout.",
+            vec!["workspace"],
+            vec!["workspace"],
+        ),
+        (
+            "resolution_open",
+            "Open a separate public-snapshot resolution workspace for a quarantined proposal. Leaves the original workspace untouched.",
+            vec!["workspace", "proposal", "resolution_workspace", "path", "operation_id"],
+            vec!["workspace", "proposal", "resolution_workspace", "path", "operation_id"],
+        ),
+        (
+            "resolution_submit",
+            "Submit a checkpoint from the resolution workspace as a new proposal against expected_head. Requires deliberate publication approval; stale heads must be refreshed.",
+            vec!["workspace", "proposal", "resolution_workspace", "checkpoint", "expected_head", "resolved_conflicts", "operation_id"],
+            vec!["workspace", "proposal", "resolution_workspace", "checkpoint", "expected_head", "resolved_conflicts", "operation_id"],
+        ),
+        (
             "operation_status",
             "Read the durable outcome for an operation ID before retrying after a disconnect.",
             vec!["operation_id"],
@@ -73,7 +91,9 @@ fn tools() -> Value {
         let properties: serde_json::Map<String, Value> = fields
             .into_iter()
             .map(|field| {
-                let schema = if field == "expected_generation" {
+                let schema = if field == "resolved_conflicts" {
+                    json!({"type":"array","items":{"type":"string"},"uniqueItems":true,"maxItems":10000})
+                } else if field == "expected_generation" {
                     json!({"type":"integer","minimum":0})
                 } else {
                     json!({"type":"string","minLength":1})
@@ -83,7 +103,7 @@ fn tools() -> Value {
             .collect();
         result.push(json!({"name":format!("wipstash_{op}"),"description":description,
             "inputSchema":{"type":"object","properties":properties,"required":required,"additionalProperties":false},
-            "annotations":{"readOnlyHint":matches!(op,"status"|"proposal_status"|"operation_status"),"destructiveHint":op=="adopt","idempotentHint":false,"openWorldHint":false}}));
+            "annotations":{"readOnlyHint":matches!(op,"status"|"proposal_status"|"operation_status"|"resolution_tasks"),"destructiveHint":op=="adopt","idempotentHint":false,"openWorldHint":false}}));
     }
     json!({"tools":result})
 }
@@ -131,7 +151,7 @@ impl Session {
                 // Offer our supported version when the requested revision differs.
                 json!({"protocolVersion":VERSION,"capabilities":{"tools":{}},
                     "serverInfo":{"name":"wipstash-local-prototype","version":env!("CARGO_PKG_VERSION")},
-                    "instructions":"Cooperative local prototype. Stop native/unmanaged writers before checkpoint/adopt. Publication and adoption require deliberate approval. Calls are serialized; cancellation is not implemented. Use operation IDs to recover uncertain outcomes."})
+                    "instructions":"Cooperative local prototype. Stop native/unmanaged writers before checkpoint/adopt. Publication and adoption require deliberate approval. Calls are serialized; cancellation is not implemented. Use operation IDs to recover uncertain outcomes. Inspect resolution_tasks returned by status and updates. For conflicts or failed checks, use resolution_open, edit and checkpoint only the separate resolution workspace, then resolution_submit against its expected head. Never overwrite the original workspace to resolve a proposal."})
             }
             "ping" => json!({}),
             _ if !self.ready => {
@@ -176,6 +196,7 @@ impl Session {
                             Some("string") => value.as_str().is_none_or(str::is_empty),
                             Some("integer") => value.as_u64().is_none(),
                             Some("object") => !value.is_object(),
+                            Some("array") => value.as_array().is_none_or(|a|a.len()>10000 || a.iter().any(|v|v.as_str().is_none_or(str::is_empty))),
                             _ => true,
                         }
                     });
@@ -287,8 +308,22 @@ mod tests {
                 .as_array()
                 .unwrap()
                 .len(),
-            9
+            12
         );
+    }
+    #[test]
+    fn resolution_submit_accepts_explicit_conflict_attestation() {
+        let mut s=Session::default(); init(&mut s);
+        let args=json!({"workspace":"owner","proposal":"p","resolution_workspace":"fix","checkpoint":"cp","expected_head":"head","resolved_conflicts":["file"],"operation_id":"submit"});
+        let result=s.handle(json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"wipstash_resolution_submit","arguments":args}}), &mut |request| {
+            assert_eq!(request["op"],"resolution_submit");
+            assert_eq!(request["resolved_conflicts"],json!(["file"]));
+            json!({"ok":true})
+        }).unwrap();
+        assert_eq!(result["result"]["isError"],false);
+        let mut bad=args;bad["resolved_conflicts"]=json!("file");
+        let result=s.handle(json!({"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"wipstash_resolution_submit","arguments":bad}}), &mut |_|panic!("invalid arguments executed")).unwrap();
+        assert_eq!(result["result"]["isError"],true);
     }
     #[test]
     fn envelope_and_argument_errors_never_execute() {

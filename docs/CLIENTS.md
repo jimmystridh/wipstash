@@ -52,7 +52,9 @@ Protocol references: [lifecycle](https://modelcontextprotocol.io/specification/2
 Discover tools through `tools/list`; the schemas are the authoritative argument
 shape. `wipstash_status`, `wipstash_updates`, `wipstash_open`,
 `wipstash_checkpoint`, `wipstash_publish`, `wipstash_adopt`,
-`wipstash_proposal_status`, and `wipstash_operation_status` cover ordinary work.
+`wipstash_proposal_status`, `wipstash_resolution_tasks`,
+`wipstash_resolution_open`, `wipstash_resolution_submit`, and
+`wipstash_operation_status` cover ordinary work.
 `wipstash` also accepts an existing JSON CLI request under `request` for other
 operations, such as explicit integration and managed commands.
 
@@ -65,8 +67,11 @@ operations, such as explicit integration and managed commands.
 4. Checkpoint saves private WIP even if the source is broken. Publish only a
    deliberately selected checkpoint with an explicit intent. Integration does
    not change another actor's working files.
-5. Query updates and explicitly adopt when ready. Inspect conflict outcomes rather
-   than silently rewriting private work.
+5. Query updates and explicitly adopt when ready. Read `resolution_tasks` on
+   status/updates and `resolution_task` on proposal status. For a quarantined
+   publication, resolve in a separate checkout, checkpoint there and explicitly
+   resubmit; never reset the original workspace. See [CONFLICTS.md](CONFLICTS.md)
+   for the complete agent workflow and the separate adoption-conflict boundary.
 6. After a timeout/disconnect, query `operation_status` for the same operation ID.
    Retry the identical request only, never reuse that ID with changed arguments.
    An uncertain managed command must not be rerun automatically. After independently
@@ -90,18 +95,25 @@ this cloud runtime, including after documented scratch-directory overrides.
 
 Claude Code 2.1.302 was installed in an isolated test prefix and successfully
 connected to the real stdio server: project approval gating, initialization,
-initialized notification and discovery of all nine tools were observed. This is
-actual client protocol evidence, not a model-driven editing session. See
+initialized notification and discovery of all nine tools present at that
+checkpoint were observed. This is actual client protocol evidence, not a
+model-driven editing session; it does not validate the later resolution tools. See
 [Claude validation](../examples/clients/CLAUDE-VALIDATION.md).
 No credentials or persistent user configuration were created or changed.
 
 `.github/workflows/native.yml` defines native Linux/macOS/Windows builds, test
 compilation, and protocol tests, plus Linux unit tests. Merely checking in that
-workflow is not a passing CI result. Windows/macOS execution, filesystem semantics,
-open-file/reparse-point hazards, executable-bit preservation, directory durability,
-process containment and installers remain unverified. Windows daemon IPC is
-explicitly unsupported; stdio does not require a socket. Unix socket bind was
-blocked by cloud sandbox `EPERM`; no socket success is claimed or bypass attempted.
+workflow is not a passing CI result. Selected native Linux/macOS/Windows
+contracts did pass at commits recorded in [SCOPE.md](SCOPE.md#verified-native-baseline),
+including process, MCP and policy contracts; later guided-pairing evidence is
+recorded there separately. This does not certify new conflict-handback changes.
+Full Windows adoption, broader filesystem semantics, open-file/reparse-point
+hazards, executable-bit preservation, directory durability, arbitrary process
+containment, real credential-vault retrieval and installers remain open. Windows
+daemon IPC is explicitly unsupported; stdio does not require a socket. A historical
+Unix socket bind attempt on this cloud host was blocked by sandbox `EPERM`; no
+cloud-local socket success is claimed or bypass attempted. That denial is separate
+from the recorded native CI contracts.
 
 Before claiming real-client support, retain client version and configuration,
 handshake/tool-list evidence, approved actual tool-call transcripts, checkpoint /

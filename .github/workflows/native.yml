@@ -41,6 +41,30 @@ jobs:
           cargo test --locked local_repository_transport_blocks_configured_remote_helpers
           python tests/mcp_protocol.py
           python tests/sync_peer_authorization.py
+      - name: Agent conflict resolution core contracts
+        run: cargo test --locked engine::regression_tests::resolution_
+      - name: Four-actor agent conflict stress campaign
+        env:
+          WIPSTASH_CONFLICT_STRESS_CI: '1'
+        run: |
+          seeds="731927"
+          if [[ "${{ runner.os }}" == "Linux" ]]; then
+            seeds="731927 991337 20261018"
+          fi
+          for seed in $seeds; do
+            python tests/agent_conflict_stress.py --seed "$seed" --artifacts "evidence/agent-conflict/$seed"
+          done
+      - name: Save bounded agent conflict evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-conflict-${{ runner.os }}-${{ github.sha }}
+          path: |
+            evidence/agent-conflict/731927/summary.json
+            evidence/agent-conflict/991337/summary.json
+            evidence/agent-conflict/20261018/summary.json
+          if-no-files-found: warn
+          retention-days: 7
       - name: Native platform contracts
         run: cargo test --locked --manifest-path crates/platform/Cargo.toml
       - name: Read-only inspector contracts

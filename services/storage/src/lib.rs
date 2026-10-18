@@ -292,6 +292,8 @@ fn journal(state: &Path) -> Result<(BTreeSet<String>, BTreeSet<String>, String)>
         "backup_state",
         "replication_binding",
         "replication_events",
+        "proposal_resolutions",
+        "resolution_sessions",
     ];
     let mut s = db
         .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
@@ -312,6 +314,8 @@ fn journal(state: &Path) -> Result<(BTreeSet<String>, BTreeSet<String>, String)>
  ("sync_exports","operation,request_digest,manifest"),("sync_proposal_origins","proposal,device,source_proposal"),
  ("sync_remote_status","proposal,revision,digest,receipt"),("sync_imports","device,operation,digest,result"),
  ("backup_state","id,destination,watermark,root,metadata,pending_watermark,pending_root,pending_metadata,error,queue_snapshot"),
+ ("proposal_resolutions","proposal,parent,root,attempt"),
+ ("resolution_sessions","id,proposal,owner,workspace,path,head,tree,conflicts,state"),
  ("replication_binding","singleton,project,authority,epoch,cursor,head"),("replication_events","sequence,operation,digest,envelope")];
     for required in &allowed[..11] {
         if !tables.iter().any(|t| t == required) {
@@ -376,7 +380,7 @@ fn journal(state: &Path) -> Result<(BTreeSet<String>, BTreeSet<String>, String)>
                     "workspaces" => matches!(column, "base" | "checkpoint"),
                     "checkpoints" => matches!(column, "commit_oid" | "tree" | "base"),
                     "proposals" => matches!(column, "commit_oid" | "base" | "head"),
-                    "candidates" => matches!(column, "head" | "tree"),
+                    "candidates" | "resolution_sessions" => matches!(column, "head" | "tree"),
                     "promotions" => matches!(column, "old" | "new"),
                     "adoptions" => matches!(column, "old_base" | "target" | "commit_oid" | "tree"),
                     "adoption_conflicts" => matches!(column, "target" | "base"),
@@ -408,6 +412,7 @@ fn journal(state: &Path) -> Result<(BTreeSet<String>, BTreeSet<String>, String)>
                                     | ("sync_imports", "result")
                                     | ("backup_state", "queue_snapshot")
                                     | ("candidates", "evidence")
+                                    | ("resolution_sessions", "conflicts")
                                     | ("proposals", "details")
                                     | ("adoptions", "old_files" | "new_files")
                                     | ("replication_events", "envelope")
@@ -1017,6 +1022,23 @@ mod tests {
             std::fs::FileTimes::new().set_modified(SystemTime::now() - Duration::from_secs(172800)),
         )
         .unwrap();
+    }
+    #[test]
+    fn resolution_sessions_pin_public_inputs_and_validate_json() {
+        let d = fixture();
+        let head = blob(d.path(), b"resolution head");
+        let tree = blob(d.path(), b"resolution tree");
+        let garbage = blob(d.path(), b"resolution garbage");
+        for oid in [&head, &tree, &garbage] { age(d.path(), oid); }
+        let db = Connection::open(d.path().join("state.sqlite")).unwrap();
+        db.execute_batch("CREATE TABLE proposal_resolutions(proposal TEXT PRIMARY KEY,parent TEXT NOT NULL,root TEXT NOT NULL,attempt INTEGER NOT NULL); CREATE TABLE resolution_sessions(id TEXT PRIMARY KEY,proposal TEXT NOT NULL,owner TEXT NOT NULL,workspace TEXT UNIQUE NOT NULL,path TEXT UNIQUE NOT NULL,head TEXT NOT NULL,tree TEXT NOT NULL,conflicts TEXT NOT NULL,state TEXT NOT NULL);").unwrap();
+        db.execute("INSERT INTO proposal_resolutions VALUES('child','parent','parent',1)", []).unwrap();
+        db.execute("INSERT INTO resolution_sessions VALUES('session','parent','owner','work','/resolution',?1,?2,'[]','open')", [&head, &tree]).unwrap();
+        let p = plan(d.path(), "coordinator.git", 86400).unwrap();
+        assert_eq!(p.candidates.len(), 1);
+        assert_eq!(p.candidates[0].oid, garbage);
+        db.execute("UPDATE resolution_sessions SET conflicts='broken'", []).unwrap();
+        assert!(plan(d.path(), "coordinator.git", 86400).unwrap_err().contains("invalid journal JSON"));
     }
     #[test]
     fn aged_unreachable_reclaimed_pending_and_acknowledged_pins_survive() {

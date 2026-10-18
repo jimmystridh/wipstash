@@ -563,7 +563,8 @@ impl Service {
                 }
                 let observation = json!({"proposal":current.proposal,"commit":status["commit"],
                     "state":status["state"],"head":status["head"],"evidence":status["evidence"],
-                    "repaired":status["details"]["repaired"] == true});
+                    "repaired":status["details"]["repaired"] == true,
+                    "resolution_task":status["resolution_task"]});
                 Export {
                     kind: "receipt".into(),
                     proposal: Some(current.proposal),
@@ -1255,7 +1256,8 @@ impl Workstation {
                 break;
             }
         }
-        Ok(json!({"ok":true,"imports":imported,"cursor":cursor,"files_changed":false}))
+        let status = run_engine(&self.engine, &self.state, json!({"op":"sync_status"})).await?;
+        Ok(json!({"ok":true,"imports":imported,"cursor":cursor,"files_changed":false,"resolution_tasks":status["resolution_tasks"],"resolution_tasks_truncated":status["resolution_tasks_truncated"]}))
     }
 }
 

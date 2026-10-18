@@ -248,7 +248,7 @@ pub fn restore(state: &Path, db: &Connection, destination: &Path) -> R<Value> {
             .filter(|k| {
                 matches!(
                     *k,
-                    "published" | "integrated" | "already_included" | "cancelled"
+                    "published" | "integrated" | "already_included" | "cancelled" | "superseded"
                 )
             })
             .ok_or("restore_invalid_public_event")?;
@@ -295,11 +295,11 @@ pub fn restore(state: &Path, db: &Connection, destination: &Path) -> R<Value> {
                     p.state = kind.into();
                     p.head = data["head"].as_str().map(str::to_owned);
                 }
-                "cancelled" => {
+                "cancelled" | "superseded" => {
                     if p.state != "recovery_quarantined" {
                         return Err("restore_inconsistent_terminal_events".into());
                     }
-                    p.state = "cancelled".into();
+                    p.state = kind.into();
                 }
                 "published" => {
                     if p.state != "recovery_quarantined" {
@@ -378,6 +378,10 @@ pub fn restore(state: &Path, db: &Connection, destination: &Path) -> R<Value> {
             // to execute recovered work or run commands from the old coordinator.
             let details = json!({"recovered_public_only":true,"repaired":snapshot["repaired"]==true,"reason":REASON,"eligibility_restored":false,"intent_restored":v2,"ownership_restored":v2,"public_queue_snapshot":snapshot}).to_string();
             sql(tx.execute("INSERT INTO proposals(id,workspace,checkpoint,commit_oid,base,intent,state,head,details) VALUES(?1,'','',?2,?6,?7,?3,?4,?5)",params![id,p.commit,p.state,p.head,details,snapshot["base"].as_str().unwrap_or(""),if v2 {snapshot["intent"].as_str().unwrap_or("")}else{""}]))?;
+            if let Some(lineage) = snapshot.get("resolution").filter(|v| !v.is_null()) {
+                sql(tx.execute_batch("CREATE TABLE IF NOT EXISTS proposal_resolutions(proposal TEXT PRIMARY KEY,parent TEXT NOT NULL,root TEXT NOT NULL,attempt INTEGER NOT NULL)"))?;
+                sql(tx.execute("INSERT INTO proposal_resolutions VALUES(?1,?2,?3,?4)", params![id, lineage["parent"].as_str(), lineage["root"].as_str(), lineage["attempt"].as_i64()]))?;
+            }
         }
         let gate = if v2 {
             manifest["recovery"].clone()
@@ -1016,6 +1020,33 @@ mod tests {
             "b".repeat(64)
         );
         assert!(!observed.to_string().contains("PRIVATE_CHECK_OUTPUT_CANARY"));
+    }
+    #[test]
+    fn restores_superseded_proposals_without_reactivating_them() {
+        let f = Fixture::new();
+        let db = Connection::open(f.source.join("state.sqlite")).unwrap();
+        db.execute("INSERT INTO proposals(id,workspace,checkpoint,commit_oid,base,intent,state) VALUES('pending','','',?1,'','','superseded')",[&f.proposal]).unwrap();
+        db.execute("INSERT INTO events(kind,data) VALUES('superseded',?1)", [json!({"proposal":"pending"}).to_string()]).unwrap();
+        backup::flush(&f.source, &db, &f.remote).unwrap();
+        restore(&f.state, &f.db, &f.remote).unwrap();
+        let state: String = f.db.query_row("SELECT state FROM proposals WHERE id='pending'", [], |r| r.get(0)).unwrap();
+        assert_eq!(state, "superseded");
+    }
+    #[test]
+    fn preserves_resolution_lineage_without_private_sessions() {
+        let f = Fixture::new();
+        let db = Connection::open(f.source.join("state.sqlite")).unwrap();
+        db.execute("INSERT INTO proposals(id,workspace,checkpoint,commit_oid,base,intent,state) VALUES('pending','PRIVATE_OWNER','PRIVATE_CHECKPOINT',?1,'','','quarantined')",[&f.proposal]).unwrap();
+        db.execute_batch("CREATE TABLE IF NOT EXISTS proposal_resolutions(proposal TEXT PRIMARY KEY,parent TEXT NOT NULL,root TEXT NOT NULL,attempt INTEGER NOT NULL)").unwrap();
+        db.execute("INSERT INTO proposal_resolutions VALUES('pending','original','original',3)", []).unwrap();
+        backup::flush(&f.source, &db, &f.remote).unwrap();
+        restore(&f.state, &f.db, &f.remote).unwrap();
+        let lineage: (String,String,i64) = f.db.query_row("SELECT parent,root,attempt FROM proposal_resolutions WHERE proposal='pending'", [], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap();
+        assert_eq!(lineage, ("original".into(),"original".into(),3));
+        assert!(recovery_status(&f.db).unwrap()["activation_required"] == true);
+        let details: String = f.db.query_row("SELECT details FROM proposals WHERE id='pending'", [], |r| r.get(0)).unwrap();
+        assert!(!details.contains("PRIVATE_OWNER"));
+        assert!(!details.contains("PRIVATE_CHECKPOINT"));
     }
     #[test]
     fn preserves_queue_snapshot_without_enabling_execution() {

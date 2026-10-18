@@ -31,6 +31,8 @@ struct Manifest {
     envelope: Option<Envelope>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     receipt: Option<Receipt>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    resolution: Option<Value>,
     payload_len: u64,
     payload_sha256: String,
 }
@@ -44,6 +46,8 @@ struct Receipt {
     integration_head: Option<String>,
     evidence: String,
     repaired: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    resolution_task: Option<Value>,
 }
 fn config(db: &Connection) -> R<Option<Config>> {
     let text: Option<String> = sql(db
@@ -454,8 +458,17 @@ pub(super) fn status(state: &Path, db: &Connection) -> R<Value> {
     } else {
         None
     };
+    let mut tasks = Vec::new();
+    let mut truncated = false;
+    if c.role == "client" {
+        let mut stmt = sql(db.prepare("SELECT proposal FROM sync_remote_status WHERE json_extract(receipt,'$.state')='quarantined' ORDER BY proposal LIMIT 257"))?;
+        for row in sql(stmt.query_map([], |r|r.get::<_,String>(0)))? {
+            if tasks.len() == 256 {truncated=true;break;}
+            if let Some(task)=super::resolution::task(db,&sql(row)?)? {tasks.push(task);}
+        }
+    }
     Ok(
-        json!({"ok":true,"state":"configured","config":c,"head":coordinator(state).head(HEAD).ok(),"cursor":cursor,"transport":"trusted_directory_exchange","authenticated":false,"warning":"Identity labels and checksums are not authentication. Import only artifacts from a separately trusted source."}),
+        json!({"ok":true,"resolution_tasks":tasks,"resolution_tasks_truncated":truncated,"state":"configured","config":c,"head":coordinator(state).head(HEAD).ok(),"cursor":cursor,"transport":"trusted_directory_exchange","authenticated":false,"warning":"Identity labels and checksums are not authentication. Import only artifacts from a separately trusted source."}),
     )
 }
 fn write_new(path: &Path, bytes: &[u8]) -> R<()> {
@@ -526,7 +539,7 @@ pub(super) fn export(state: &Path, db: &Connection, r: &Value) -> R<Value> {
             local(state, &wid)
         };
         let bytes = if m.kind == "receipt" {
-            Vec::new()
+            receipt_payload(&git, m.receipt.as_ref().ok_or("invalid_receipt")?)?
         } else {
             crate::transfer::export(&git, std::slice::from_ref(&m.head))?
         };
@@ -606,6 +619,7 @@ pub(super) fn export(state: &Path, db: &Connection, r: &Value) -> R<Value> {
                     integration_head: observed["head"].as_str().map(str::to_owned),
                     evidence: field(&observed, "evidence")?.into(),
                     repaired: observed["details"]["repaired"] == true,
+                    resolution_task: wire_task(db, &observed, &source_proposal)?,
                 };
                 validate_receipt(&receipt)?;
                 (
@@ -621,13 +635,17 @@ pub(super) fn export(state: &Path, db: &Connection, r: &Value) -> R<Value> {
             _ => return Err("sync_role_mismatch".into()),
         };
         let bytes = if kind == "receipt" {
-            Vec::new()
+            receipt_payload(&git, receipt.as_ref().ok_or("invalid_receipt")?)?
         } else {
             crate::transfer::export(&git, std::slice::from_ref(&head))?
         };
         if bytes.len() > replication::MAX_OBJECT_BYTES {
             return Err("object_too_large".into());
         }
+        let resolution = if kind == "proposal" {
+            let lineage = super::resolution::lineage(db, proposal.as_deref().ok_or("invalid_manifest")?)?;
+            if lineage["attempt"] == 0 { None } else { Some(lineage) }
+        } else { None };
         let m = Manifest {
             version: 1,
             project: c.project.clone(),
@@ -642,6 +660,7 @@ pub(super) fn export(state: &Path, db: &Connection, r: &Value) -> R<Value> {
             intent,
             envelope,
             receipt,
+            resolution,
             payload_len: bytes.len() as u64,
             payload_sha256: format!("{:x}", Sha256::digest(&bytes)),
         };
@@ -759,7 +778,7 @@ pub(super) fn import(state: &Path, db: &Connection, r: &Value) -> R<Value> {
     }
     match m.kind.as_str() {
         "head" if c.role == "client" => {
-            if m.base.is_some() || m.proposal.is_some() || m.intent.is_some() || m.receipt.is_some()
+            if m.base.is_some() || m.proposal.is_some() || m.intent.is_some() || m.receipt.is_some() || m.resolution.is_some()
             {
                 return Err("invalid_manifest".into());
             }
@@ -866,11 +885,44 @@ pub(super) fn import(state: &Path, db: &Connection, r: &Value) -> R<Value> {
                     return Err("idempotency_mismatch: proposal identity already accepted with other content".into());
                 }
             }
+            let resolution = if let Some(lineage) = &m.resolution {
+                only_fields(lineage, &["parent","root","attempt"])?;
+                let parent_source = field(lineage,"parent")?;
+                let root_source = field(lineage,"root")?;
+                ident(parent_source)?; ident(root_source)?;
+                let attempt = lineage["attempt"].as_i64().filter(|n|(1..=3).contains(n)).ok_or("invalid_resolution_attempt")?;
+                let remote_id = |source: &str| format!("remote-{}",digest(&json!({"device":m.device,"proposal":source})));
+                let parent = remote_id(parent_source);
+                let root = remote_id(root_source);
+                let (owner, source):(String,String) = sql(db.query_row("SELECT device,source_proposal FROM sync_proposal_origins WHERE proposal=?1",[&parent],|r|Ok((r.get(0)?,r.get(1)?))))?;
+                if owner != m.device || source != parent_source {return Err("resolution_owner_mismatch".into());}
+                let previous = super::resolution::lineage(db,&parent)?;
+                if previous["root"] != root || previous["attempt"].as_i64().map(|n|n+1) != Some(attempt) {return Err("invalid_resolution_lineage".into());}
+                if existing.is_none() {
+                    let phase:String = sql(db.query_row("SELECT state FROM proposals WHERE id=?1",[&parent],|r|r.get(0)))?;
+                    if phase != "quarantined" {return Err("resolution_not_required".into());}
+                    // Offline proposals may name a validated historical public base.
+                    // Integration recomputes merge and checks against the live authority tip.
+                } else if super::resolution::lineage(db,&id)? != json!({"parent":parent,"root":root,"attempt":attempt}) {
+                    return Err("idempotency_mismatch: resolution lineage changed".into());
+                }
+                Some((parent,root,attempt))
+            } else {
+                if existing.is_some() && super::resolution::lineage(db,&id)?["attempt"] != 0 {return Err("idempotency_mismatch: missing resolution lineage".into());}
+                None
+            };
             prepared.install(&git)?;
             git.set_ref(&format!("refs/wipstash/proposals/{id}"), &m.head, None)?;
             let result = json!({"ok":true,"state":existing.as_ref().map(|e|e.3.as_str()).unwrap_or("coordinator_accepted"),"proposal":id,"source_proposal":p,"head":m.head,"duplicate":existing.is_some(),"authenticated":false});
             sql(db.execute_batch("BEGIN IMMEDIATE"))?;
             sql(db.execute("INSERT OR IGNORE INTO proposals(id,workspace,checkpoint,commit_oid,base,intent,state) VALUES(?1,?2,?3,?4,?5,?6,'coordinator_accepted')",params![id,format!("remote-{}",m.device),p,m.head,base,intent]))?;
+            if let Some((parent,root,attempt)) = &resolution {
+                sql(db.execute("INSERT OR IGNORE INTO proposal_resolutions VALUES(?1,?2,?3,?4)",params![id,parent,root,attempt]))?;
+                if existing.is_none() {
+                    sql(db.execute("UPDATE proposals SET state='superseded' WHERE id=?1 AND state='quarantined'",[parent]))?;
+                    event(db,"superseded",&json!({"proposal":parent}))?;
+                }
+            }
             sql(db.execute(
                 "INSERT OR IGNORE INTO sync_proposal_origins VALUES(?1,?2,?3)",
                 params![id, m.device, p],
@@ -889,7 +941,7 @@ pub(super) fn import(state: &Path, db: &Connection, r: &Value) -> R<Value> {
             sql(db.execute_batch("COMMIT"))?;
             Ok(result)
         }
-        "receipt" if c.role == "client" => import_receipt(db, &c, &m, &md, payload.as_bytes()),
+        "receipt" if c.role == "client" => import_receipt(state, db, &c, &m, &md, payload.as_bytes()),
         _ => Err("sync_role_mismatch".into()),
     }
 }
@@ -1014,9 +1066,86 @@ fn valid_oid(s: &str) -> bool {
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 fn terminal(s: &str) -> bool {
-    matches!(s, "integrated" | "already_included" | "cancelled")
+    matches!(s, "integrated" | "already_included" | "cancelled" | "superseded")
+}
+fn wire_task(db: &Connection, observed: &Value, source: &str) -> R<Option<Value>> {
+    let Some(mut task) = observed.get("resolution_task").filter(|v| !v.is_null()).cloned() else { return Ok(None) };
+    task["proposal"] = json!(source);
+    // Do not disclose authority-local workspace labels. The recipient rewrites this.
+    task["workspace"] = Value::Null;
+    // Recompute candidate trees locally; do not reference unshipped synthetic objects
+    // or export raw evaluation errors that can contain private executable paths.
+    for key in ["input_tree","candidate_tree","diagnosis","sides","checkout_basis"] {
+        task.as_object_mut().ok_or("invalid_resolution_task")?.remove(key);
+    }
+    for key in ["parent", "root"] {
+        if let Some(id) = task["lineage"][key].as_str() {
+            let source: String = sql(db.query_row("SELECT source_proposal FROM sync_proposal_origins WHERE proposal=?1", [id], |r|r.get(0)))?;
+            task["lineage"][key] = json!(source);
+        }
+    }
+    let checks = task["checks"].as_array().ok_or("invalid_resolution_checks")?;
+    task["checks"] = Value::Array(checks.iter().map(|c| {
+        let mut safe = serde_json::Map::new();
+        safe.insert("id_sha256".into(), json!(digest(&c["id"])));
+        for key in ["required","success","exit_code","timed_out","checkout_unchanged","stdout_prefix_sha256","stderr_prefix_sha256","stdout_bytes","stderr_bytes","output_truncated","output_collection_complete","execution_is_os_sandboxed"] {
+            if let Some(v)=c.get(key) {safe.insert(key.into(),v.clone());}
+        }
+        Value::Object(safe)
+    }).collect());
+    validate_task(&task)?;
+    Ok(Some(task))
+}
+fn validate_task(t: &Value) -> R<()> {
+    only_fields(t, &["proposal","workspace","state","reason","base","proposal_commit","current_head","conflict_paths","checks","policy_sha256","attempt","max_attempts","lineage","next_action","semantic_correctness_claimed"])?;
+    ident(field(t,"proposal")?)?;
+    if !t["workspace"].is_null() || !matches!(t["state"].as_str(),Some("action_required"|"escalated")) || !matches!(t["reason"].as_str(),Some("merge_conflict"|"required_checks_failed"|"policy_evaluation_failed")) || t["semantic_correctness_claimed"] != false || t["max_attempts"] != 3 || !t["attempt"].as_u64().is_some_and(|n| n<=3) { return Err("invalid_resolution_task".into()); }
+    for key in ["base","proposal_commit","current_head"] {
+        if !t[key].as_str().is_some_and(valid_oid) { return Err("invalid_resolution_task_oid".into()); }
+    }
+    if !t["policy_sha256"].as_str().is_some_and(|s|s.len()==64 && s.bytes().all(|b|b.is_ascii_hexdigit())) || !t["next_action"].as_str().is_some_and(|s|s.len()<=1024) {return Err("invalid_resolution_task".into());}
+    let paths=t["conflict_paths"].as_array().ok_or("invalid_resolution_paths")?;
+    if paths.len()>10000 { return Err("invalid_resolution_paths".into()); }
+    let mut seen=std::collections::HashSet::new();
+    for p in paths {let p=p.as_str().ok_or("invalid_resolution_paths")?; if p.len()>4096 || !seen.insert(p) {return Err("invalid_resolution_paths".into());} crate::git::allowed_path(p)?;}
+    only_fields(&t["lineage"], &["parent","root","attempt"])?;
+    ident(field(&t["lineage"],"root")?)?;
+    if !t["lineage"]["parent"].is_null() {ident(field(&t["lineage"],"parent")?)?;}
+    if t["lineage"]["attempt"]!=t["attempt"] {return Err("invalid_resolution_lineage".into());}
+    let checks=t["checks"].as_array().ok_or("invalid_resolution_checks")?;
+    if checks.len()>64 {return Err("invalid_resolution_checks".into());}
+    for c in checks {
+        only_fields(c, &["id_sha256","required","success","exit_code","timed_out","checkout_unchanged","stdout_prefix_sha256","stderr_prefix_sha256","stdout_bytes","stderr_bytes","output_truncated","output_collection_complete","execution_is_os_sandboxed"])?;
+        for (key,v) in c.as_object().ok_or("invalid_resolution_checks")? {
+            let valid = match key.as_str() {
+                "id_sha256"|"stdout_prefix_sha256"|"stderr_prefix_sha256" => v.as_str().is_some_and(|s|s.len()==64 && s.bytes().all(|b|b.is_ascii_hexdigit())),
+                "candidate_tree" => v.as_str().is_some_and(valid_oid),
+                "stdout_bytes"|"stderr_bytes" => v.as_u64().is_some(),
+                "exit_code" => v.is_null() || v.as_i64().is_some_and(|n|i32::try_from(n).is_ok()),
+                _ => v.is_boolean(),
+            };
+            if !valid {return Err("invalid_resolution_checks".into());}
+        }
+    }
+    if serde_json::to_vec(t).map_err(|e|e.to_string())?.len()>replication::MAX_ENVELOPE_BYTES/2 {return Err("resolution_task_too_large".into());}
+    Ok(())
+}
+fn receipt_roots(r: &Receipt) -> R<Vec<String>> {
+    let Some(task) = &r.resolution_task else { return Ok(Vec::new()) };
+    let mut roots = vec![field(task, "proposal_commit")?.to_owned(), field(task, "current_head")?.to_owned()];
+    roots.sort();
+    roots.dedup();
+    Ok(roots)
+}
+fn receipt_payload(git: &Git, r: &Receipt) -> R<Vec<u8>> {
+    let roots = receipt_roots(r)?;
+    if roots.is_empty() { Ok(Vec::new()) } else { crate::transfer::export(git, &roots) }
 }
 fn validate_receipt(r: &Receipt) -> R<()> {
+    if let Some(t) = &r.resolution_task {
+        if r.state != "quarantined" {return Err("invalid_resolution_task_state".into());}
+        validate_task(t)?;
+    }
     ident(&r.recipient)?;
     ident(&r.authority_proposal)?;
     if r.revision == 0
@@ -1028,6 +1157,7 @@ fn validate_receipt(r: &Receipt) -> R<()> {
                 | "integrated"
                 | "already_included"
                 | "cancelled"
+                | "superseded"
         )
         || !matches!(
             r.evidence.as_str(),
@@ -1044,8 +1174,8 @@ fn validate_receipt(r: &Receipt) -> R<()> {
     }
     Ok(())
 }
-fn import_receipt(db: &Connection, c: &Config, m: &Manifest, md: &str, payload: &[u8]) -> R<Value> {
-    if !payload.is_empty() || m.intent.is_some() || m.envelope.is_some() {
+fn import_receipt(state: &Path, db: &Connection, c: &Config, m: &Manifest, md: &str, payload: &[u8]) -> R<Value> {
+    if m.intent.is_some() || m.envelope.is_some() || m.resolution.is_some() {
         return Err("invalid_receipt".into());
     }
     let receipt = m.receipt.as_ref().ok_or("invalid_receipt")?;
@@ -1071,7 +1201,7 @@ fn import_receipt(db: &Connection, c: &Config, m: &Manifest, md: &str, payload: 
         [proposal],
         |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
     ))?;
-    if commit != m.head || local_base != *base || local_state != "local_queued" {
+    if commit != m.head || local_base != *base || !matches!(local_state.as_str(), "local_queued" | "superseded") {
         return Err("receipt_proposal_mismatch".into());
     }
     let exported:bool=sql(db.query_row("SELECT EXISTS(SELECT 1 FROM sync_exports WHERE json_extract(manifest,'$.kind')='proposal' AND json_extract(manifest,'$.proposal')=?1)",[proposal],|row|row.get(0)))?;
@@ -1101,6 +1231,19 @@ fn import_receipt(db: &Connection, c: &Config, m: &Manifest, md: &str, payload: 
         {
             return Err("terminal_receipt_regression".into());
         }
+    }
+    // Validate and install only public object closure after ownership, identity,
+    // and monotonic receipt checks. A receipt never advances the replay cursor or HEAD.
+    let roots = receipt_roots(receipt)?;
+    if roots.is_empty() {
+        if !payload.is_empty() { return Err("invalid_receipt: unexpected payload".into()); }
+    } else {
+        let task = receipt.resolution_task.as_ref().ok_or("invalid_receipt")?;
+        if task["proposal"].as_str() != Some(proposal.as_str()) || task["base"].as_str() != Some(base.as_str()) || task["proposal_commit"].as_str() != Some(commit.as_str()) {
+            return Err("receipt_task_mismatch".into());
+        }
+        let git = coordinator(state);
+        crate::transfer::prepare(&git, payload, &roots)?.install(&git)?;
     }
     let result = json!({"ok":true,"state":"receipt_recorded","proposal":proposal,"remote_observation":receipt,"files_changed":false,"authenticated":false});
     sql(db.execute_batch("BEGIN IMMEDIATE"))?;
@@ -1238,6 +1381,36 @@ mod history_tests {
         }
         db
     }
+    fn task_fixture() -> Value {
+        json!({"proposal":"p","workspace":null,"state":"action_required","reason":"merge_conflict","base":"a".repeat(40),"proposal_commit":"b".repeat(40),"current_head":"c".repeat(40),"conflict_paths":["file"],"checks":[],"policy_sha256":"d".repeat(64),"attempt":0,"max_attempts":3,"lineage":{"parent":null,"root":"p","attempt":0},"next_action":"Use resolution_open.","semantic_correctness_claimed":false})
+    }
+    #[test]
+    fn resolution_receipts_are_bounded_and_do_not_carry_raw_diagnostics() {
+        let task=task_fixture();
+        validate_task(&task).unwrap();
+        for (key,value) in [
+            ("workspace",json!("private-workspace")),
+            ("diagnosis",json!("/private/command")),
+            ("candidate_tree",json!("e".repeat(40))),
+            ("attempt",json!(4)),
+            ("conflict_paths",json!(["../private"])),
+            ("conflict_paths",json!(["file","file"])),
+            ("checks",json!([{"spawn_error":"private command"}])),
+            ("checks",json!([{"id_sha256":"not-a-hash"}])),
+        ] {
+            let mut bad=task.clone(); bad[key]=value;
+            assert!(validate_task(&bad).is_err(),"accepted invalid field {key}");
+        }
+        let mut receipt=Receipt {recipient:"alice".into(),authority_proposal:"remote-p".into(),revision:1,state:"quarantined".into(),integration_head:None,evidence:"unchecked".into(),repaired:false,resolution_task:Some(task)};
+        validate_receipt(&receipt).unwrap();
+        assert_eq!(receipt_roots(&receipt).unwrap(),vec!["b".repeat(40),"c".repeat(40)]);
+        receipt.state="integrated".into(); receipt.integration_head=Some("c".repeat(40));
+        assert!(validate_receipt(&receipt).is_err());
+        receipt.resolution_task=None;
+        validate_receipt(&receipt).unwrap();
+        assert!(serde_json::to_value(&receipt).unwrap().get("resolution_task").is_none());
+    }
+
     #[test]
     fn bounded_history_and_exact_lookup() {
         let db = history_db();
