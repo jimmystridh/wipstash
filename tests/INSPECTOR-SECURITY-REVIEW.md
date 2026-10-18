@@ -45,3 +45,14 @@ Example authorized-CI sequence (after building both binaries and the WASM bundle
 python3 tests/inspector_security.py --artifacts evidence/inspector/ci
 python3 tests/inspector_browser.py --assets apps/inspector/dist --fixture evidence/inspector/ci/fixture.json
 ```
+
+## Actual HTTP acceptance
+
+[Run 39082914515](https://github.com/jimmystridh/wipstash/actions/runs/39082914515), commit `8f8d7041e71738d3a88de0e9da6f219a724b6bc6`, passed both transport modes in native GitHub CI:
+
+- Intercepted browser run: 54 API requests, production security headers and unchanged state/workspaces.
+- Actual loopback server run: 53 API requests, plus 19 direct HTTP admission/asset checks. Browser response checks found no header/status errors, page exceptions or dialogs. One 503 was deliberately injected to verify retry; all other same-origin browser traffic reached the owned HTTP server.
+- The HTTP checks verified hostile Host/Origin/cross-site/POST rejection and exact HTML/WASM/JavaScript bytes and MIME types. Mobile controls, completed diffs, page-width bounds, keyboard behavior and labelled demo isolation passed.
+- Startup, inspection and shutdown left persistent state and workspaces unchanged. Only the owned child server was stopped.
+
+[Browser/HTTP evidence artifact](https://github.com/jimmystridh/wipstash/actions/runs/39082914515/artifacts/12119697702). This establishes the local loopback server/browser path on the CI runner, not remote hosting, real-device network deployment or an authenticated multi-user web service. Earlier local restrictions remain respected.

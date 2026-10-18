@@ -235,6 +235,22 @@ async fn actual_engine_in_memory_adapter_resumes_and_imports_only_at_finish() {
             ..Limits::default()
         },
     };
+    // Expose the underlying read-only admission error in native CI rather than
+    // only the intentionally generic storage_quota wire error.
+    wipstash_storage::admit(
+        &[
+            state.canonicalize().unwrap(),
+            staging.canonicalize().unwrap(),
+        ],
+        wipstash_storage::Budget {
+            max_bytes: config.limits.max_storage_bytes,
+            max_entries: config.limits.max_storage_entries,
+            reserve_bytes: config.limits.free_space_reserve_bytes,
+        },
+        64 * 1024,
+        40_000,
+    )
+    .expect("initial native storage admission");
     let service = Service::new(config.clone()).await.unwrap();
     let (_, wire) = service
         .route(

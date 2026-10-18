@@ -28,6 +28,24 @@ pub struct Budget {
     pub max_entries: u64,
     pub reserve_bytes: u64,
 }
+fn is_link_or_reparse(metadata: &fs::Metadata) -> bool {
+    if metadata.file_type().is_symlink() {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        // Win32 FILE_ATTRIBUTE_REPARSE_POINT includes junctions and other
+        // reparse types that FileType::is_symlink does not necessarily cover.
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
+        metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
+}
+
 fn safe_path(p: &Path) -> Result<()> {
     if !p.is_absolute() {
         return Err("absolute path required".into());
@@ -38,8 +56,14 @@ fn safe_path(p: &Path) -> Result<()> {
             return Err("dot path forbidden".into());
         }
         q.push(c);
-        let m = fs::symlink_metadata(&q).map_err(err)?;
-        if m.file_type().is_symlink() {
+        // A Windows drive prefix is not itself a directory path. Defer its
+        // metadata lookup until the following root separator is appended.
+        if matches!(c, Component::Prefix(_)) {
+            continue;
+        }
+        let m = fs::symlink_metadata(&q)
+            .map_err(|e| format!("storage_path_metadata: {}: {e}", q.display()))?;
+        if is_link_or_reparse(&m) {
             return Err("symlink forbidden".into());
         }
     }
@@ -50,7 +74,7 @@ fn walk(p: &Path, u: &mut Usage, limit: u64, files: &mut Vec<PathBuf>) -> Result
         return Err("directory depth limit".into());
     }
     let m = fs::symlink_metadata(p).map_err(err)?;
-    if m.file_type().is_symlink() || (!m.is_dir() && !m.is_file()) {
+    if is_link_or_reparse(&m) || (!m.is_dir() && !m.is_file()) {
         return Err("symlink or special file forbidden".into());
     }
     u.entries = u.entries.checked_add(1).ok_or("entry overflow")?;
@@ -125,7 +149,8 @@ pub fn admit(
         return Err("storage_pressure: admission rejected".into());
     }
     for root in roots {
-        if fs2::available_space(root).map_err(err)?
+        if fs2::available_space(root)
+            .map_err(|e| format!("storage_available_space: {}: {e}", root.display()))?
             < incoming_bytes
                 .checked_add(budget.reserve_bytes)
                 .ok_or("byte overflow")?
@@ -1066,6 +1091,47 @@ mod tests {
             .unwrap_err()
             .contains("recovery required"));
     }
+    #[test]
+    fn canonical_roots_preserve_admission_checks() {
+        let d = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(d.path()).unwrap();
+        fs::write(root.join("retained"), vec![7; 8192]).unwrap();
+        let roots = vec![root.clone()];
+        let before = usage(&roots, 100).expect("canonical-root usage must inspect real ancestors");
+        let used = before.logical_bytes.max(before.allocated_bytes);
+        let budget = Budget {
+            max_bytes: used + 1024 * 1024,
+            max_entries: 100,
+            reserve_bytes: 0,
+        };
+        assert_eq!(
+            admit(&roots, budget, 4096, 1).expect("canonical-root free-space admission"),
+            before
+        );
+        assert!(admit(
+            &roots,
+            Budget {
+                max_bytes: used - 1,
+                ..budget
+            },
+            0,
+            0
+        )
+        .is_err());
+        assert!(admit(
+            &roots,
+            Budget {
+                max_entries: before.entries - 1,
+                ..budget
+            },
+            0,
+            0
+        )
+        .is_err());
+        assert!(admit(&roots, budget, u64::MAX, 0).is_err());
+        assert_eq!(fs::read(root.join("retained")).unwrap(), vec![7; 8192]);
+    }
+
     #[test]
     fn quota_and_path_boundaries() {
         let d = tempfile::tempdir().unwrap();
