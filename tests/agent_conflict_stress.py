@@ -12,9 +12,11 @@ from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import random
+import re
 import sqlite3
 import sys
 import tempfile
@@ -30,6 +32,54 @@ HEAD = 'refs/wipstash/integration'
 COUNTS = Counter()
 COUNT_LOCK = threading.Lock()
 DISTINCT = {'published_proposals': set(), 'submitted_resolutions': set(), 'returned_conflicts': set(), 'integrated_proposals': set()}
+RESOLUTION_TIMINGS = []
+MAX_RESOLUTION_TIMINGS = 1000
+TIMING_PHASES = {
+    'sqlite': frozenset(('entered', 'state_lock_waiting', 'state_lock_acquired',
+                         'sqlite_opened', 'sqlite_initialized', 'recovery_complete',
+                         'dispatch', 'dispatch_complete')),
+    'resolution': frozenset(('materialization_started', 'checkout_materialized',
+                             'base_materialized', 'current_materialized',
+                             'proposal_materialized', 'materialization_complete')),
+}
+TIMING_LINE = re.compile(r'wipstash_(sqlite|resolution)_phase pid=[0-9]{1,10} phase=([a-z_]+) elapsed_ms=([0-9]{1,12})')
+
+
+def resolution_timing(event):
+    """Only fixed labels and numeric timing leave the synthetic scratch logs."""
+    try:
+        request = json.loads(event['argv'][-1])
+        if not isinstance(request, dict) or request.get('op') != 'resolution_open':
+            return None
+        seconds = event['seconds']
+        if isinstance(seconds, bool) or not isinstance(seconds, (int, float)) or not math.isfinite(seconds) or seconds < 0:
+            return None
+    except (KeyError, IndexError, TypeError, ValueError):
+        return None
+    stderr = event.get('stderr') or ''
+    if isinstance(stderr, bytes):
+        stderr = stderr.decode('utf-8', errors='replace')
+    if not isinstance(stderr, str):
+        stderr = ''
+    phases = {'sqlite': {}, 'resolution': {}}
+    # Bound both scan work and output; arbitrary stderr is never copied.
+    for line in stderr[:65536].splitlines()[:256]:
+        match = TIMING_LINE.fullmatch(line)
+        if match:
+            group, phase, elapsed = match.groups()
+            if phase in TIMING_PHASES[group]:
+                phases[group].setdefault(phase, int(elapsed))
+    result = {'seconds': round(seconds, 3), 'timed_out': event.get('timed_out') is True,
+              'phases': phases}
+    for name, group, start, end in (
+        ('state_lock_wait_ms', 'sqlite', 'state_lock_waiting', 'state_lock_acquired'),
+        ('dispatch_ms', 'sqlite', 'dispatch', 'dispatch_complete'),
+        ('materialization_ms', 'resolution', 'materialization_started', 'materialization_complete'),
+    ):
+        timeline = phases[group]
+        if start in timeline and end in timeline and timeline[end] >= timeline[start]:
+            result[name] = timeline[end] - timeline[start]
+    return result
 
 def observe(scope, request, response):
     with COUNT_LOCK:
@@ -70,6 +120,14 @@ def prepare_and_submit_wave(items, prepare, submit):
 
 
 class ConflictStress(unittest.TestCase):
+    def tearDown(self):
+        timings = [timing for event in self.h.events
+                   if (timing := resolution_timing(event)) is not None]
+        for timing in timings:
+            timing['case'] = self._testMethodName
+        with COUNT_LOCK:
+            RESOLUTION_TIMINGS.extend(timings[:MAX_RESOLUTION_TIMINGS - len(RESOLUTION_TIMINGS)])
+
     def setUp(self):
         # Keep fixtures beneath Windows MAX_PATH without weakening production guards.
         # Descriptive test names remain in unittest output and summary evidence.
@@ -618,6 +676,7 @@ def main():
                    'test_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
                    'max_concurrent_agents': 4, 'distinct_agent_waves': 3,
                    'operation_counts': dict(sorted(COUNTS.items())),
+                   'resolution_open_timings': RESOLUTION_TIMINGS,
                    'distinct_outcome_counts': {key: len(values) for key, values in DISTINCT.items()},
                    'scope': 'Four scripted agents; real concurrent CLI requests and fresh-process durable recovery; no sockets or process killing; no real AI sessions.'}
         (artifacts / 'summary.json').write_text(json.dumps(summary, indent=2) + '\n')

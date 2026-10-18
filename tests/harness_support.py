@@ -9,7 +9,12 @@ class Harness:
         self.root.mkdir(parents=True,exist_ok=True);self.events=[]
     def command(self,args,*,env=None,ok=True,cwd=None):
         started=time.monotonic()
-        p=subprocess.run([str(x) for x in args],cwd=cwd,env=dict(os.environ,**(env or {})),capture_output=True,text=True,errors="replace",timeout=40)
+        try:
+            p=subprocess.run([str(x) for x in args],cwd=cwd,env=dict(os.environ,**(env or {})),capture_output=True,text=True,errors="replace",timeout=40)
+        except subprocess.TimeoutExpired as failure:
+            captured=lambda value: value.decode('utf-8',errors='replace') if isinstance(value,bytes) else value
+            self.events.append({'argv':[str(x) for x in args],'exit':None,'stdout':captured(failure.stdout),'stderr':captured(failure.stderr),'seconds':time.monotonic()-started,'timed_out':True})
+            raise
         event={'argv':[str(x) for x in args],'exit':p.returncode,'stdout':p.stdout,'stderr':p.stderr,'seconds':time.monotonic()-started}
         self.events.append(event)
         if ok and p.returncode: raise AssertionError(json.dumps(event,indent=2))

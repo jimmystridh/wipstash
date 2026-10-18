@@ -1,0 +1,490 @@
+{
+  "scope": "Linux disposable 3-actor concurrent resolution opens; no policy commands, fault injection, listeners, process killing or CI spoofing.",
+  "variants": {
+    "baseline": {
+      "binary_sha256": "c815bf64300b15d51ad44564284e524026377086887553f2968eeac4193868fe",
+      "trials": [
+        {
+          "trial": 1,
+          "wave_seconds": 1.773,
+          "requests": [
+            {
+              "seconds": 0.562,
+              "timed_out": false,
+              "phases": {
+                "sqlite": {
+                  "entered": 0,
+                  "state_lock_waiting": 0,
+                  "state_lock_acquired": 0,
+                  "sqlite_opened": 0,
+                  "sqlite_initialized": 1,
+                  "recovery_complete": 1,
+                  "dispatch": 1,
+                  "dispatch_complete": 558
+                },
+                "resolution": {}
+              },
+              "state_lock_wait_ms": 0,
+              "dispatch_ms": 557
+            },
+            {
+              "seconds": 1.218,
+              "timed_out": false,
+              "phases": {
+                "sqlite": {
+                  "entered": 0,
+                  "state_lock_waiting": 0,
+                  "state_lock_acquired": 558,
+                  "sqlite_opened": 558,
+                  "sqlite_initialized": 559,
+                  "recovery_complete": 559,
+                  "dispatch": 559,
+                  "dispatch_complete": 1214
+                },
+                "resolution": {}
+              },
+              "state_lock_wait_ms": 558,
+              "dispatch_ms": 655
+            },
+            {
+              "seconds": 1.772,
+              "timed_out": false,
+              "phases": {
+                "sqlite": {
+                  "entered": 0,
+                  "state_lock_waiting": 0,
+                  "state_lock_acquired": 1214,
+                  "sqlite_opened": 1214,
+                  "sqlite_initialized": 1215,
+                  "recovery_complete": 1215,
+                  "dispatch": 1215,
+                  "dispatch_complete": 1766
+                },
+                "resolution": {}
+              },
+              "state_lock_wait_ms": 1214,
+              "dispatch_ms": 551
+            }
+          ]
+        },
+        {
+          "trial": 2,
+          "wave_seconds": 1.733,
+          "requests": [
+            {
+              "seconds": 0.587,
+              "timed_out": false,
+              "phases": {
+                "sqlite": {
+                  "entered": 0,
+                  "state_lock_waiting": 0,
+                  "state_lock_acquired": 0,
+                  "sqlite_opened": 0,
+                  "sqlite_initialized": 1,
+                  "recovery_complete": 1,
+                  "dispatch": 2,
+                  "dispatch_complete": 583
+                },
+                "resolution": {}
+              },
+              "state_lock_wait_ms": 0,
+              "dispatch_ms": 581
+            },
+            {
+              "seconds": 1.731,
+              "timed_out": false,
+              "phases": {
+                "sqlite": {
+                  "entered": 0,
+                  "state_lock_waiting": 0,
+                  "state_lock_acquired": 1167,
+                  "sqlite_opened": 1167,
+                  "sqlite_initialized": 1168,
+                  "recovery_complete": 1168,
+                  "dispatch": 1168,
+                  "dispatch_complete": 1727
+                },
+                "resolution": {}
+              },
+              "state_lock_wait_ms": 1167,
+              "dispatch_ms": 559
+            },
+            {
+              "seconds": 1.171,
+              "timed_out": false,
+              "phases": {
+                "sqlite": {
+                  "entered": 0,
+                  "state_lock_waiting": 0,
+                  "state_lock_acquired": 584,
+                  "sqlite_opened": 584,
+                  "sqlite_initialized": 584,
+                  "recovery_complete": 584,
+                  "dispatch": 585,
+                  "dispatch_complete": 1166
+                },
+                "resolution": {}
+              },
+              "state_lock_wait_ms": 584,
+              "dispatch_ms": 581
+            }
+          ]
+        },
+        {
+          "trial": 3,
+          "wave_seconds": 1.546,
+          "requests": [
+            {
+              "seconds": 1.544,
+              "timed_out": false,
+              "phases": {
+                "sqlite": {
+                  "entered": 0,
+                  "state_lock_waiting": 0,
+                  "state_lock_acquired": 980,
+                  "sqlite_opened": 980,
+                  "sqlite_initialized": 981,
+                  "recovery_complete": 981,
+                  "dispatch": 981,
+                  "dispatch_complete": 1540
+                },
+                "resolution": {}
+              },
+              "state_lock_wait_ms": 980,
+              "dispatch_ms": 559
+            },
+            {
+              "seconds": 0.984,
+              "timed_out": false,
+              "phases": {
+                "sqlite": {
+                  "entered": 0,
+                  "state_lock_waiting": 0,
+                  "state_lock_acquired": 475,
+                  "sqlite_opened": 475,
+                  "sqlite_initialized": 475,
+                  "recovery_complete": 476,
+                  "dispatch": 476,
+                  "dispatch_complete": 980
+                },
+                "resolution": {}
+              },
+              "state_lock_wait_ms": 475,
+              "dispatch_ms": 504
+            },
+            {
+              "seconds": 0.478,
+              "timed_out": false,
+              "phases": {
+                "sqlite": {
+                  "entered": 0,
+                  "state_lock_waiting": 0,
+                  "state_lock_acquired": 0,
+                  "sqlite_opened": 0,
+                  "sqlite_initialized": 0,
+                  "recovery_complete": 1,
+                  "dispatch": 1,
+                  "dispatch_complete": 474
+                },
+                "resolution": {}
+              },
+              "state_lock_wait_ms": 0,
+              "dispatch_ms": 473
+            }
+          ]
+        }
+      ],
+      "median_wave_seconds": 1.733,
+      "max_lock_wait_ms": 1214,
+      "max_request_seconds": 1.772
+    },
+    "optimized": {
+      "binary_sha256": "c5fc13eb76aa2da85f3683c00499dafafba8af40c325543fb62de636bb27a327",
+      "trials": [
+        {
+          "trial": 1,
+          "wave_seconds": 0.886,
+          "requests": [
+            {
+              "seconds": 0.577,
+              "timed_out": false,
+              "phases": {
+                "sqlite": {
+                  "entered": 0,
+                  "state_lock_waiting": 0,
+                  "state_lock_acquired": 289,
+                  "sqlite_opened": 289,
+                  "sqlite_initialized": 289,
+                  "recovery_complete": 290,
+                  "dispatch": 290,
+                  "dispatch_complete": 574
+                },
+                "resolution": {
+                  "materialization_started": 0,
+                  "checkout_materialized": 107,
+                  "base_materialized": 151,
+                  "current_materialized": 197,
+                  "proposal_materialized": 239,
+                  "materialization_complete": 239
+                }
+              },
+              "state_lock_wait_ms": 289,
+              "dispatch_ms": 284,
+              "materialization_ms": 239
+            },
+            {
+              "seconds": 0.885,
+              "timed_out": false,
+              "phases": {
+                "sqlite": {
+                  "entered": 0,
+                  "state_lock_waiting": 0,
+                  "state_lock_acquired": 574,
+                  "sqlite_opened": 574,
+                  "sqlite_initialized": 575,
+                  "recovery_complete": 575,
+                  "dispatch": 575,
+                  "dispatch_complete": 881
+                },
+                "resolution": {
+                  "materialization_started": 0,
+                  "checkout_materialized": 114,
+                  "base_materialized": 174,
+                  "current_materialized": 218,
+                  "proposal_materialized": 265,
+                  "materialization_complete": 265
+                }
+              },
+              "state_lock_wait_ms": 574,
+              "dispatch_ms": 306,
+              "materialization_ms": 265
+            },
+            {
+              "seconds": 0.292,
+              "timed_out": false,
+              "phases": {
+                "sqlite": {
+                  "entered": 0,
+                  "state_lock_waiting": 0,
+                  "state_lock_acquired": 0,
+                  "sqlite_opened": 0,
+                  "sqlite_initialized": 0,
+                  "recovery_complete": 1,
+                  "dispatch": 1,
+                  "dispatch_complete": 289
+                },
+                "resolution": {
+                  "materialization_started": 0,
+                  "checkout_materialized": 115,
+                  "base_materialized": 157,
+                  "current_materialized": 200,
+                  "proposal_materialized": 249,
+                  "materialization_complete": 249
+                }
+              },
+              "state_lock_wait_ms": 0,
+              "dispatch_ms": 288,
+              "materialization_ms": 249
+            }
+          ]
+        },
+        {
+          "trial": 2,
+          "wave_seconds": 0.857,
+          "requests": [
+            {
+              "seconds": 0.855,
+              "timed_out": false,
+              "phases": {
+                "sqlite": {
+                  "entered": 0,
+                  "state_lock_waiting": 0,
+                  "state_lock_acquired": 560,
+                  "sqlite_opened": 561,
+                  "sqlite_initialized": 561,
+                  "recovery_complete": 562,
+                  "dispatch": 562,
+                  "dispatch_complete": 851
+                },
+                "resolution": {
+                  "materialization_started": 0,
+                  "checkout_materialized": 113,
+                  "base_materialized": 157,
+                  "current_materialized": 203,
+                  "proposal_materialized": 249,
+                  "materialization_complete": 249
+                }
+              },
+              "state_lock_wait_ms": 560,
+              "dispatch_ms": 289,
+              "materialization_ms": 249
+            },
+            {
+              "seconds": 0.564,
+              "timed_out": false,
+              "phases": {
+                "sqlite": {
+                  "entered": 0,
+                  "state_lock_waiting": 0,
+                  "state_lock_acquired": 287,
+                  "sqlite_opened": 287,
+                  "sqlite_initialized": 288,
+                  "recovery_complete": 288,
+                  "dispatch": 288,
+                  "dispatch_complete": 560
+                },
+                "resolution": {
+                  "materialization_started": 0,
+                  "checkout_materialized": 105,
+                  "base_materialized": 147,
+                  "current_materialized": 189,
+                  "proposal_materialized": 233,
+                  "materialization_complete": 233
+                }
+              },
+              "state_lock_wait_ms": 287,
+              "dispatch_ms": 272,
+              "materialization_ms": 233
+            },
+            {
+              "seconds": 0.291,
+              "timed_out": false,
+              "phases": {
+                "sqlite": {
+                  "entered": 0,
+                  "state_lock_waiting": 0,
+                  "state_lock_acquired": 0,
+                  "sqlite_opened": 0,
+                  "sqlite_initialized": 0,
+                  "recovery_complete": 0,
+                  "dispatch": 0,
+                  "dispatch_complete": 287
+                },
+                "resolution": {
+                  "materialization_started": 0,
+                  "checkout_materialized": 110,
+                  "base_materialized": 157,
+                  "current_materialized": 201,
+                  "proposal_materialized": 246,
+                  "materialization_complete": 246
+                }
+              },
+              "state_lock_wait_ms": 0,
+              "dispatch_ms": 287,
+              "materialization_ms": 246
+            }
+          ]
+        },
+        {
+          "trial": 3,
+          "wave_seconds": 0.822,
+          "requests": [
+            {
+              "seconds": 0.538,
+              "timed_out": false,
+              "phases": {
+                "sqlite": {
+                  "entered": 0,
+                  "state_lock_waiting": 0,
+                  "state_lock_acquired": 264,
+                  "sqlite_opened": 265,
+                  "sqlite_initialized": 265,
+                  "recovery_complete": 265,
+                  "dispatch": 265,
+                  "dispatch_complete": 535
+                },
+                "resolution": {
+                  "materialization_started": 0,
+                  "checkout_materialized": 104,
+                  "base_materialized": 147,
+                  "current_materialized": 189,
+                  "proposal_materialized": 231,
+                  "materialization_complete": 231
+                }
+              },
+              "state_lock_wait_ms": 264,
+              "dispatch_ms": 270,
+              "materialization_ms": 231
+            },
+            {
+              "seconds": 0.82,
+              "timed_out": false,
+              "phases": {
+                "sqlite": {
+                  "entered": 0,
+                  "state_lock_waiting": 0,
+                  "state_lock_acquired": 534,
+                  "sqlite_opened": 535,
+                  "sqlite_initialized": 535,
+                  "recovery_complete": 535,
+                  "dispatch": 535,
+                  "dispatch_complete": 817
+                },
+                "resolution": {
+                  "materialization_started": 0,
+                  "checkout_materialized": 105,
+                  "base_materialized": 148,
+                  "current_materialized": 196,
+                  "proposal_materialized": 244,
+                  "materialization_complete": 244
+                }
+              },
+              "state_lock_wait_ms": 534,
+              "dispatch_ms": 282,
+              "materialization_ms": 244
+            },
+            {
+              "seconds": 0.268,
+              "timed_out": false,
+              "phases": {
+                "sqlite": {
+                  "entered": 0,
+                  "state_lock_waiting": 0,
+                  "state_lock_acquired": 0,
+                  "sqlite_opened": 0,
+                  "sqlite_initialized": 0,
+                  "recovery_complete": 0,
+                  "dispatch": 1,
+                  "dispatch_complete": 264
+                },
+                "resolution": {
+                  "materialization_started": 0,
+                  "checkout_materialized": 101,
+                  "base_materialized": 142,
+                  "current_materialized": 184,
+                  "proposal_materialized": 228,
+                  "materialization_complete": 228
+                }
+              },
+              "state_lock_wait_ms": 0,
+              "dispatch_ms": 263,
+              "materialization_ms": 228
+            }
+          ]
+        }
+      ],
+      "median_wave_seconds": 0.857,
+      "max_lock_wait_ms": 574,
+      "max_request_seconds": 0.885
+    }
+  },
+  "measured_at_utc": "2026-10-18T18:58:37Z",
+  "host": "Linux local development environment; not a Windows CI result",
+  "deterministic_process_counts": {
+    "fresh_contexts": 296,
+    "shared_context": 164,
+    "views": 4,
+    "files_per_view": 12,
+    "directories_per_view": 7,
+    "verified_blobs": 15,
+    "reused_blobs": 33
+  },
+  "limits": {
+    "cache_bytes": 67108864,
+    "cache_entries": 10000,
+    "snapshot_bytes": 67108864,
+    "blob_bytes": 16777216,
+    "stress_harness_request_timeout_seconds": 40
+  },
+  "benchmark_driver_subprocess_timeout_seconds": null
+}

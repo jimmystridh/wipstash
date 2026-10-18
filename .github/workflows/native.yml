@@ -88,6 +88,7 @@ jobs:
           cargo test --locked engine::regression_tests::resolution_
           cargo test --locked --bin wipstash engine::regression_tests::publication_
           cargo test --locked --bin wipstash git::tests::immutable_reference_creation_never_replaces_existing_pins
+          cargo test --locked --bin wipstash git::tests::materializer_
           python tests/test_agent_conflict_stress_harness.py
       - name: Read-only MCP Events and GitHub identity contracts
         run: cargo test --locked --manifest-path services/mcp-events/Cargo.toml -- --show-output

@@ -1,10 +1,11 @@
 //! Byte-preserving Git plumbing. No worktree checkout, filters, hooks, or shell.
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 pub type Result<T> = std::result::Result<T, String>;
 pub struct Git {
@@ -22,6 +23,62 @@ const MAX_TREE_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_SNAPSHOT_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_ENTRIES: usize = 10_000;
 const MAX_GIT_OUTPUT: usize = 32 * 1024 * 1024;
+#[cfg(test)]
+thread_local! {
+    static GIT_COMMANDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+// A short-lived reader, bound to one repository. Only verified immutable blob
+// bytes are reused: trees and all destination-specific checks remain fresh.
+// These bytes form a request-local snapshot; a new reader verifies them again.
+pub(crate) struct Materializer<'a> {
+    git: &'a Git,
+    blobs: VerifiedBlobs,
+}
+#[derive(Default)]
+struct VerifiedBlobs {
+    objects: HashMap<String, Arc<[u8]>>,
+    bytes: u64,
+    #[cfg(test)]
+    hits: usize,
+    #[cfg(test)]
+    misses: usize,
+}
+impl VerifiedBlobs {
+    fn get(&mut self, object: &str) -> Option<Arc<[u8]>> {
+        let bytes = self.objects.get(object)?.clone();
+        #[cfg(test)]
+        {
+            self.hits += 1;
+        }
+        Some(bytes)
+    }
+    fn read(&mut self, git: &Git, object: &str) -> Result<Arc<[u8]>> {
+        #[cfg(test)]
+        {
+            self.misses += 1;
+        }
+        let bytes: Arc<[u8]> = git.verified_object("blob", object)?.into();
+        self.retain(object, bytes.clone());
+        Ok(bytes)
+    }
+    fn retain(&mut self, object: &str, bytes: Arc<[u8]>) {
+        // Cache admission is optional and never changes snapshot acceptance.
+        // The entry cap also bounds metadata for zero-length blobs.
+        if self.objects.len() < MAX_ENTRIES
+            && !self.objects.contains_key(object)
+            && bytes.len() as u64 <= MAX_SNAPSHOT_BYTES.saturating_sub(self.bytes)
+        {
+            self.bytes += bytes.len() as u64;
+            self.objects.insert(object.to_owned(), bytes);
+        }
+    }
+}
+impl Materializer<'_> {
+    pub(crate) fn materialize(&mut self, treeish: &str, root: &Path) -> Result<()> {
+        self.git.materialize_with(treeish, root, &mut self.blobs)
+    }
+}
 
 fn bounded_output(mut input: impl Read, limit: usize) -> Result<Vec<u8>> {
     let mut output = Vec::new();
@@ -102,6 +159,8 @@ fn command() -> Command {
     c
 }
 fn execute(mut c: Command, input: Option<&[u8]>) -> Result<Output> {
+    #[cfg(test)]
+    GIT_COMMANDS.with(|count| count.set(count.get() + 1));
     c.stdin(if input.is_some() {
         Stdio::piped()
     } else {
@@ -674,7 +733,21 @@ impl Git {
             _ => checked(output).map(|_| false),
         }
     }
+    pub(crate) fn materializer(&self) -> Materializer<'_> {
+        Materializer {
+            git: self,
+            blobs: VerifiedBlobs::default(),
+        }
+    }
     pub fn materialize(&self, treeish: &str, root: &Path) -> Result<()> {
+        self.materializer().materialize(treeish, root)
+    }
+    fn materialize_with(
+        &self,
+        treeish: &str,
+        root: &Path,
+        blobs: &mut VerifiedBlobs,
+    ) -> Result<()> {
         real_directory(root)?;
         let metadata = fs::symlink_metadata(root).map_err(err)?;
         if metadata.file_type().is_symlink()
@@ -721,9 +794,18 @@ impl Git {
                 return Err(format!("unsupported_tree: mode/type for {name:?}"));
             }
             valid_oid(fields[2])?;
-            add_snapshot_bytes(&mut total, self.object_size(fields[2])?)?;
+            let cached = blobs.get(fields[2]);
+            let size = match &cached {
+                Some(bytes) => bytes.len() as u64,
+                None => self.object_size(fields[2])?,
+            };
+            // Repeated content still consumes each destination's byte budget.
+            add_snapshot_bytes(&mut total, size)?;
             preflight_space(root, total, entries.len() as u64 + 1)?;
-            let bytes = self.verified_object("blob", fields[2])?;
+            let bytes = match cached {
+                Some(bytes) => bytes,
+                None => blobs.read(self, fields[2])?,
+            };
             entries.push((name.to_owned(), fields[0] == "100755", bytes));
         }
         for name in &exact {
@@ -1258,5 +1340,214 @@ mod tests {
             .unwrap_err()
             .contains("storage_limit"));
         assert_eq!(fs::read_dir(&dst).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn materializer_reuses_verified_blobs_with_deterministic_process_reduction() {
+        let t = Temp::new();
+        let git = Git::init(&t.0.join("repo")).unwrap();
+        let source = t.0.join("source");
+        fs::create_dir(&source).unwrap();
+        let names = [
+            "readme",
+            "src/a",
+            "src/b",
+            "src/c",
+            "notes/shared",
+            "config/policy",
+            "assets/binary",
+            "data/crlf",
+            "data/lf",
+            "scripts/run",
+            "docs/api",
+            "docs/guide",
+        ];
+        for name in names {
+            let path = source.join(name);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, format!("fixture {name}\r\n\0\u{7f}")).unwrap();
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(
+                source.join("scripts/run"),
+                fs::Permissions::from_mode(0o755),
+            )
+            .unwrap();
+        }
+        let trees: Vec<_> = (0..4)
+            .map(|version| {
+                fs::write(
+                    source.join("notes/shared"),
+                    format!("public version {version}\n"),
+                )
+                .unwrap();
+                git.capture(&source).unwrap()
+            })
+            .collect();
+        let before = GIT_COMMANDS.with(|count| count.get());
+        let started = std::time::Instant::now();
+        for (index, tree) in trees.iter().enumerate() {
+            let destination = t.0.join(format!("fresh-{index}"));
+            fs::create_dir(&destination).unwrap();
+            git.materialize(tree, &destination).unwrap();
+        }
+        let fresh_commands = GIT_COMMANDS.with(|count| count.get()) - before;
+        let fresh_ms = started.elapsed().as_millis();
+        let before = GIT_COMMANDS.with(|count| count.get());
+        let started = std::time::Instant::now();
+        let mut materializer = git.materializer();
+        for (index, tree) in trees.iter().enumerate() {
+            let destination = t.0.join(format!("shared-{index}"));
+            fs::create_dir(&destination).unwrap();
+            materializer.materialize(tree, &destination).unwrap();
+            for name in names {
+                assert_eq!(
+                    fs::read(destination.join(name)).unwrap(),
+                    fs::read(t.0.join(format!("fresh-{index}")).join(name)).unwrap()
+                );
+            }
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                assert_ne!(
+                    fs::metadata(destination.join("scripts/run"))
+                        .unwrap()
+                        .permissions()
+                        .mode()
+                        & 0o111,
+                    0
+                );
+            }
+        }
+        let shared_commands = GIT_COMMANDS.with(|count| count.get()) - before;
+        let shared_ms = started.elapsed().as_millis();
+        assert_eq!(
+            (materializer.blobs.misses, materializer.blobs.hits),
+            (15, 33)
+        );
+        assert_eq!((fresh_commands, shared_commands), (296, 164));
+        eprintln!("materializer_processes fresh={fresh_commands} shared={shared_commands} verified_blobs=15 reused_blobs=33 fresh_ms={fresh_ms} shared_ms={shared_ms}");
+    }
+
+    #[test]
+    fn materializer_cache_admission_is_bounded_and_optional() {
+        let mut blobs = VerifiedBlobs::default();
+        let full: Arc<[u8]> = vec![0; MAX_BLOB_BYTES as usize].into();
+        for index in 0..4 {
+            blobs.retain(&format!("large-{index}"), full.clone());
+        }
+        blobs.retain("overflow", Arc::from(&b"x"[..]));
+        assert_eq!(blobs.bytes, MAX_SNAPSHOT_BYTES);
+        assert!(!blobs.objects.contains_key("overflow"));
+        let mut blobs = VerifiedBlobs::default();
+        for index in 0..MAX_ENTRIES + 1 {
+            blobs.retain(&format!("empty-{index}"), Arc::from(&b""[..]));
+        }
+        assert_eq!(blobs.objects.len(), MAX_ENTRIES);
+        assert_eq!(blobs.bytes, 0);
+        let t = Temp::new();
+        let git = Git::init(&t.0.join("repo")).unwrap();
+        let object = oid(git
+            .run(&["hash-object", "-w", "--stdin"], Some(b"valid uncached"))
+            .unwrap())
+        .unwrap();
+        assert_eq!(&*blobs.read(&git, &object).unwrap(), b"valid uncached");
+        assert_eq!(blobs.objects.len(), MAX_ENTRIES);
+        assert!(!blobs.objects.contains_key(&object));
+    }
+
+    #[test]
+    fn materializer_cache_hits_do_not_waive_snapshot_size_or_path_validation() {
+        let t = Temp::new();
+        let git = Git::init(&t.0.join("repo")).unwrap();
+        let blob = oid(git
+            .run(
+                &["hash-object", "-w", "--stdin"],
+                Some(&vec![0; MAX_BLOB_BYTES as usize]),
+            )
+            .unwrap())
+        .unwrap();
+        let tree =
+            |entries: &str| oid(git.run(&["mktree"], Some(entries.as_bytes())).unwrap()).unwrap();
+        let mut materializer = git.materializer();
+        let first = tree(&format!("100644 blob {blob}\tgood\n"));
+        let destination = t.0.join("first");
+        fs::create_dir(&destination).unwrap();
+        materializer.materialize(&first, &destination).unwrap();
+        for (index, entries) in [
+            format!("100644 blob {blob}\t.env\n"),
+            format!("120000 blob {blob}\tlink\n"),
+            format!("100644 blob {blob}\tA\n100644 blob {blob}\ta\n"),
+            (0..5)
+                .map(|n| format!("100644 blob {blob}\tf{n}\n"))
+                .collect(),
+        ]
+        .iter()
+        .enumerate()
+        {
+            let destination = t.0.join(format!("rejected-{index}"));
+            fs::create_dir(&destination).unwrap();
+            assert!(materializer
+                .materialize(&tree(entries), &destination)
+                .is_err());
+            assert_eq!(fs::read_dir(destination).unwrap().count(), 0);
+        }
+        assert_eq!(materializer.blobs.misses, 1);
+    }
+
+    #[test]
+    fn materializer_revalidates_trees_and_new_requests_revalidate_blobs() {
+        let t = Temp::new();
+        let git = Git::init(&t.0.join("repo")).unwrap();
+        let source = t.0.join("source");
+        fs::create_dir_all(source.join("nested")).unwrap();
+        fs::write(source.join("nested/file"), b"original").unwrap();
+        let tree = git.capture(&source).unwrap();
+        let blob = git.head(&format!("{tree}:nested/file")).unwrap();
+        let subtree = git.head(&format!("{tree}:nested")).unwrap();
+        let object_path = |id: &str| git.repo.join("objects").join(&id[..2]).join(&id[2..]);
+        let original_subtree = fs::read(object_path(&subtree)).unwrap();
+        let empty = git.empty_tree().unwrap();
+        let destination = |name: &str| {
+            let path = t.0.join(name);
+            fs::create_dir(&path).unwrap();
+            path
+        };
+        let mut materializer = git.materializer();
+        materializer
+            .materialize(&tree, &destination("first"))
+            .unwrap();
+        fs::remove_file(object_path(&subtree)).unwrap();
+        fs::copy(object_path(&empty), object_path(&subtree)).unwrap();
+        let rejected = destination("bad-subtree");
+        assert!(materializer
+            .materialize(&tree, &rejected)
+            .unwrap_err()
+            .contains("storage_corruption"));
+        assert_eq!(fs::read_dir(rejected).unwrap().count(), 0);
+        fs::remove_file(object_path(&subtree)).unwrap();
+        fs::write(object_path(&subtree), original_subtree).unwrap();
+        let replacement = oid(git
+            .run(&["hash-object", "-w", "--stdin"], Some(b"replacement"))
+            .unwrap())
+        .unwrap();
+        fs::remove_file(object_path(&blob)).unwrap();
+        fs::copy(object_path(&replacement), object_path(&blob)).unwrap();
+        // Within this request only the original, verified bytes are reused.
+        let retained = destination("retained");
+        materializer.materialize(&tree, &retained).unwrap();
+        assert_eq!(fs::read(retained.join("nested/file")).unwrap(), b"original");
+        let rejected = destination("fresh-request");
+        assert!(git
+            .materialize(&tree, &rejected)
+            .unwrap_err()
+            .contains("storage_corruption"));
+        assert_eq!(fs::read_dir(rejected).unwrap().count(), 0);
+        fs::remove_file(object_path(&blob)).unwrap();
+        let rejected = destination("missing-blob");
+        assert!(git.materialize(&tree, &rejected).is_err());
+        assert_eq!(fs::read_dir(rejected).unwrap().count(), 0);
     }
 }

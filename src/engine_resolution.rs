@@ -3,6 +3,18 @@
 use super::*;
 const MAX_ATTEMPTS: i64 = 3;
 
+fn materialization_phase(started: std::time::Instant, phase: &str) {
+    if sqlite_diagnostics_requested(std::env::var("WIPSTASH_SQLITE_DIAGNOSTICS").ok().as_deref()) {
+        // Fixed labels only; no request, object, source, or destination data.
+        eprintln!(
+            "wipstash_resolution_phase pid={} phase={} elapsed_ms={}",
+            std::process::id(),
+            phase,
+            started.elapsed().as_millis()
+        );
+    }
+}
+
 pub(super) fn schema(db: &Connection) -> R<()> {
     sql(db.execute_batch("CREATE TABLE IF NOT EXISTS proposal_resolutions(proposal TEXT PRIMARY KEY,parent TEXT NOT NULL,root TEXT NOT NULL,attempt INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS resolution_sessions(id TEXT PRIMARY KEY,proposal TEXT NOT NULL,owner TEXT NOT NULL,workspace TEXT UNIQUE NOT NULL,path TEXT UNIQUE NOT NULL,head TEXT NOT NULL,tree TEXT NOT NULL,conflicts TEXT NOT NULL,state TEXT NOT NULL);"))
@@ -232,6 +244,9 @@ pub(super) fn open(state: &Path, db: &Connection, r: &Value) -> R<Value> {
     let root = PathBuf::from(&path);
     let git = local(state, wid);
     if phase == "preparing" {
+        let started = std::time::Instant::now();
+        materialization_phase(started, "materialization_started");
+        let mut materializer = git.materializer();
         // A crash after materialization is recognizable without overwriting later user edits.
         let installed = if root.exists() && io(fs::read_dir(&root))?.next().is_some() {
             if git.capture(&root)? != tree {
@@ -247,8 +262,9 @@ pub(super) fn open(state: &Path, db: &Connection, r: &Value) -> R<Value> {
             if !root.exists() {
                 io(fs::create_dir(&root))?;
             }
-            git.materialize(&tree, &root)?;
+            materializer.materialize(&tree, &root)?;
         }
+        materialization_phase(started, "checkout_materialized");
         fault("resolution_open_after_materialize");
         // Public side snapshots give model-agnostic tools byte-exact base/ours/theirs
         // inputs, including binary conflicts, without exposing private checkpoints.
@@ -262,12 +278,21 @@ pub(super) fn open(state: &Path, db: &Connection, r: &Value) -> R<Value> {
             let side = inputs.join(label);
             if !side.exists() {
                 io(fs::create_dir_all(&side))?;
-                git.materialize(oid, &side)?;
+                materializer.materialize(oid, &side)?;
             } else if git.capture(&side)? != git.tree(oid)? {
                 return Err("resolution_recovery_required: public input snapshot changed".into());
             }
+            materialization_phase(
+                started,
+                match label {
+                    "base" => "base_materialized",
+                    "current" => "current_materialized",
+                    _ => "proposal_materialized",
+                },
+            );
             side_paths.insert(label.into(), json!(side));
         }
+        materialization_phase(started, "materialization_complete");
         let initial = git.head(&format!("refs/wipstash/resolutions/{id}"))?;
         sql(db.execute_batch("BEGIN IMMEDIATE"))?;
         sql(db.execute(
