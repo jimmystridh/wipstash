@@ -141,10 +141,15 @@ recovery from a stopped authority. Then run four independent clients over actual
 TLS with delay, disconnects, lost acknowledgements, stale epochs and revocation.
 Retain the build hash and redacted evidence. Passing native-CI guided pairing
 establishes selected actual loopback TLS and managed device-lifecycle contracts.
-The separate real-TLS upload-fault campaign is not yet passed: its initial run hit
-a fixture `sequence_gap` after successful compilation. In-memory tests, application
-fault injection and real loopback sockets do not establish hosted multi-machine
-network behavior or power-loss safety. See [SCOPE.md](SCOPE.md) for revision-specific
+The separate Linux real-TLS upload-fault campaign also passed at functional commit
+`1488774be3582fb0322de74f1071245ced08f114` in [native CI 39095243418](https://github.com/jimmystridh/wipstash/actions/runs/39095243418).
+Artifact `12124098556` records four device identities, two server restarts, a
+262,144-byte retained offset, eight upload attempts, one pre-send drop, one lost
+acknowledgment, one cross-device rejection, six certificate/ACL rejections and two
+integrated publications. All stored public blobs, including unreachable objects,
+were audited. The earlier fixture sequencing failure is superseded. In-memory
+tests, application fault injection and real loopback sockets do not establish
+hosted multi-machine network behavior or power-loss safety. See [SCOPE.md](SCOPE.md) for revision-specific
 evidence and [tests/README.md](../tests/README.md) for guarded CI commands.
 
 Never disable TLS verification, use a plaintext fallback or run concurrent writable

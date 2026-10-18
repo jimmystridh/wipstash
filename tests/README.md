@@ -43,7 +43,7 @@ Defaults select `target/debug/wipstash` and
 `safe-stderr.txt` as artifacts. Never upload the temporary profile/state tree,
 private keys, invitation bodies or raw command output.
 
-## Real TLS resumable upload-fault campaign (CI only, pending acceptance)
+## Real TLS resumable upload-fault campaign (CI only)
 
 `services/transport/tests/live_tls_ci.rs` is an ignored integration test with an
 owned real loopback mTLS listener and four scripted identities using the legacy
@@ -51,9 +51,9 @@ file-ACL path. It is distinct from guided pairing. Its assertions cover certific
 and ACL denials, cross-device upload isolation, durable partial transfer restart,
 exact chunk/final acknowledgment replay, application delay, a pre-send drop and a
 post-commit lost acknowledgment, deliberate publication, public-object privacy and
-preserved private worktrees. Those are intended assertions, not a passed-result
-claim: the reconstructed campaign compiled but its initial CI run hit a fixture
-`sequence_gap`; correction and a successful rerun remain pending.
+preserved private worktrees. The campaign passed on Linux at functional commit
+`1488774be3582fb0322de74f1071245ced08f114`; see the exact evidence below.
+The earlier fixture `sequence_gap` failure is superseded by the corrected run.
 
 The test is ignored by ordinary `cargo test`. Explicit execution requires both
 `GITHUB_ACTIONS=true` and `WIPSTASH_LIVE_TLS_CI=1`. The checked-in native workflow
@@ -82,10 +82,8 @@ response-bound checks passed too. These supersede historical “native never ran
 and “no listener tested” statements, while the original local adversarial harness
 remains narrower evidence on its own.
 
-At this documentation checkpoint, `e9afab` has a Unix fixture-permission failure
-being fixed; final full-revision CI is pending and main remains `112f8e7`.
-Do not promote the separate upload-fault campaign to passed evidence before a
-successful corrected run. Preserve exact revisions and CI results; intermediate
-success does not certify later edits. See [SCOPE.md](../docs/SCOPE.md) for remaining
-model-workflow, writer containment, full Windows adoption, real vault, multi-host
-WAN, GitHub/fresh-host recovery, physical power-loss and performance gates.
+Functional commit `1488774be3582fb0322de74f1071245ced08f114` passed [native CI 39095243418](https://github.com/jimmystridh/wipstash/actions/runs/39095243418), with Linux, macOS, Windows and browser jobs green, and [bootstrap CI 39095243492](https://github.com/jimmystridh/wipstash/actions/runs/39095243492). The formatter patch was empty.
+
+Real-TLS artifact `12124098556` passed: four device identities, two owned server restarts, a retained offset of 262,144 bytes, eight upload attempts, one pre-send drop, one post-commit lost acknowledgment, one cross-device rejection, six certificate/ACL rejections and two integrated publications. Every stored public Git blob, including unreachable objects, was audited.
+
+At this functional checkpoint, main was still `112f8e7`; release publication requires passing CI on the final cleanup revision. This evidence is revision-specific and does not establish deployed multi-host WAN operation or completion of the full production specification. Preserve exact revisions and CI results; passing functional CI does not certify later edits. See [SCOPE.md](../docs/SCOPE.md) for remaining model-workflow, writer containment, full Windows adoption, real vault, multi-host WAN, GitHub/fresh-host recovery, physical power-loss and performance gates.
