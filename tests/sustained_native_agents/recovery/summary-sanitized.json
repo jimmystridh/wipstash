@@ -1,0 +1,47 @@
+{
+  "kind": "separately_measured_oracle_guided_recovery",
+  "external_oracle_feedback_interventions": 1,
+  "blind_result_unchanged": "FAIL: 8 of 5,780 semantic assertions",
+  "core_policy_checks_configured": false,
+  "source_projection_observed_in_recovery": false,
+  "coordinator_elapsed_seconds": 108.60495281219482,
+  "automatic_integration_calls": 311,
+  "integration_errors": 0,
+  "accepted_publications": 1,
+  "outcomes": [
+    {
+      "integration_started_epoch": 1792332767.5118778,
+      "integration_finished_epoch": 1792332767.591826,
+      "evidence": "unchecked",
+      "head": "edde8a17cbadaca02faeb411de2f0d35a4769838",
+      "proposal": "actor-c-recovery-1-publish",
+      "repaired": false,
+      "state": "integrated"
+    }
+  ],
+  "task_seconds": 60.85630464553833,
+  "publish_to_integrated_seconds": 0.3450760841369629,
+  "all_frozen_blind_evidence_hashes_unchanged": true,
+  "frozen_evidence_files_verified": 56,
+  "original_private_workspaces_still_intact": true,
+  "original_private_checkpoint_oids_still_absent_publicly": true,
+  "public_blobs_scanned_after_recovery": 113,
+  "all_public_blobs_still_marker_free": true,
+  "public_ref_private_paths": [],
+  "author_tests": {
+    "before_fix_test_count": 97,
+    "before_fix_failures": 5,
+    "after_fix_test_count": 97,
+    "after_fix_failures": 0
+  },
+  "new_private_workspace_intact": true,
+  "independent_frozen_oracle": {
+    "result": "PASS",
+    "invocations": 170,
+    "checks": 5780,
+    "failures": 0,
+    "oracle_sha256": "7688a757fcf87e128c4ddaf05673c670a361d2dd62fba1e83967671fe2034c50",
+    "result_sha256": "c7f64c31aac6113ebb96d28482f7339ffc434e20e29336b1ab6ea3c5aeb2b2de",
+    "head": "edde8a17cbadaca02faeb411de2f0d35a4769838"
+  }
+}

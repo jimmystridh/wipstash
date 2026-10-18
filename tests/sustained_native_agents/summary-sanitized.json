@@ -1,0 +1,290 @@
+{
+  "elapsed_seconds": 563.3693432807922,
+  "genuine_native_actors": 4,
+  "planned_feature_waves": 32,
+  "integrated_feature_waves": 32,
+  "unfinished_features": [],
+  "publication_requests_accepted": 46,
+  "initial_feature_publications": 32,
+  "resolution_publications": 14,
+  "proposal_states": {
+    "integrated": 32,
+    "superseded": 14
+  },
+  "integration_outcomes": {
+    "integrated": 32,
+    "quarantined": 14
+  },
+  "automatic_integration_calls": 1591,
+  "integration_call_errors": 0,
+  "nonempty_integration_call_seconds": {
+    "n": 46,
+    "min": 0.015752772997075226,
+    "p50": 0.07938040399676538,
+    "p95": 0.29008356099984667,
+    "p99": 0.5968731399996601,
+    "max": 0.8000561049993848,
+    "mean": 0.12402791808705407
+  },
+  "queue_age_lower_seconds": {
+    "n": 46,
+    "min": 0,
+    "p50": 0.07410979270935059,
+    "p95": 0.2794666290283203,
+    "p99": 0.2902832746505737,
+    "max": 0.2952749729156494,
+    "mean": 0.09857012914574664
+  },
+  "queue_age_upper_seconds": {
+    "n": 46,
+    "min": 0.061127662658691406,
+    "p50": 0.27714788913726807,
+    "p95": 0.4227915406227112,
+    "p99": 0.8674385547637927,
+    "max": 1.060868740081787,
+    "mean": 0.2982691059941831
+  },
+  "accepted_to_outcome_seconds": {
+    "n": 46,
+    "min": 0.020470380783081055,
+    "p50": 0.19136130809783936,
+    "p95": 0.3785051107406616,
+    "p99": 0.8176007390022265,
+    "max": 1.0164802074432373,
+    "mean": 0.1914162376652593
+  },
+  "root_publish_to_integrated_seconds": {
+    "n": 32,
+    "min": 0.025850772857666016,
+    "p50": 0.4698784351348877,
+    "p95": 53.261757194995866,
+    "p99": 135.79176211357128,
+    "max": 167.09242701530457,
+    "mean": 18.776551835238934
+  },
+  "feature_task_seconds": {
+    "n": 32,
+    "min": 13.943313360214233,
+    "p50": 26.866443991661072,
+    "p95": 81.08261265754699,
+    "p99": 158.43915884256376,
+    "max": 189.4771707057953,
+    "mean": 40.362277917563915
+  },
+  "accepted_publications_per_minute": 4.899095119246438,
+  "integrated_features_per_minute": 3.408066169910565,
+  "quarantined_outcomes_per_minute": 1.4910289493358724,
+  "failed_actor_rpc_calls_per_minute": 1.9170372205746928,
+  "peak_journal_reconstructed_queue_depth": 2,
+  "peak_unfinished_lineages": 4,
+  "actor_rpc_error_codes": {
+    "stale_resolution": 17,
+    "storage_error": 1
+  },
+  "author_test_runs": 63,
+  "author_test_failures": 0,
+  "resolution_openings": 31,
+  "stale_resolution_submissions": 17,
+  "exhausted_lineages": 0,
+  "per_actor": {
+    "actor-a": {
+      "completed": 8,
+      "not_completed": [],
+      "queue_age_lower_seconds": {
+        "n": 12,
+        "min": 0,
+        "p50": 0.06837165355682373,
+        "p95": 0.2774802207946777,
+        "p99": 0.28039361953735353,
+        "max": 0.28112196922302246,
+        "mean": 0.10451219479242961
+      },
+      "publish_to_integrated_seconds": {
+        "n": 8,
+        "min": 0.058550357818603516,
+        "p50": 17.436609745025635,
+        "p95": 42.32345212697983,
+        "p99": 42.65612910032272,
+        "max": 42.73929834365845,
+        "mean": 19.87820079922676
+      },
+      "task_seconds": {
+        "n": 8,
+        "min": 16.82370686531067,
+        "p50": 36.015578866004944,
+        "p95": 61.00415502786636,
+        "p99": 61.299177334308624,
+        "max": 61.37293291091919,
+        "mean": 38.41576609015465
+      },
+      "resolution_openings": 8,
+      "stale_submissions": 4
+    },
+    "actor-b": {
+      "completed": 8,
+      "not_completed": [],
+      "queue_age_lower_seconds": {
+        "n": 10,
+        "min": 0,
+        "p50": 0.06550979614257812,
+        "p95": 0.25257816314697257,
+        "p99": 0.27786148071289063,
+        "max": 0.2841823101043701,
+        "mean": 0.10136189460754394
+      },
+      "publish_to_integrated_seconds": {
+        "n": 8,
+        "min": 0.025850772857666016,
+        "p50": 0.23531043529510498,
+        "p95": 31.571402180194845,
+        "p99": 36.40903446435928,
+        "max": 37.61844253540039,
+        "mean": 7.377090930938721
+      },
+      "task_seconds": {
+        "n": 8,
+        "min": 13.943313360214233,
+        "p50": 18.415480732917786,
+        "p95": 48.98366982936858,
+        "p99": 53.00490085124969,
+        "max": 54.01020860671997,
+        "mean": 24.50376719236374
+      },
+      "resolution_openings": 3,
+      "stale_submissions": 1
+    },
+    "actor-c": {
+      "completed": 8,
+      "not_completed": [],
+      "queue_age_lower_seconds": {
+        "n": 11,
+        "min": 0,
+        "p50": 0.1344301700592041,
+        "p95": 0.26063239574432373,
+        "p99": 0.2883464574813843,
+        "max": 0.2952749729156494,
+        "mean": 0.12669656493447043
+      },
+      "publish_to_integrated_seconds": {
+        "n": 8,
+        "min": 0.24071621894836426,
+        "p50": 0.4698784351348877,
+        "p95": 117.48500047922127,
+        "p99": 157.1709417080879,
+        "max": 167.09242701530457,
+        "mean": 27.050741314888
+      },
+      "task_seconds": {
+        "n": 8,
+        "min": 19.122920513153076,
+        "p50": 27.837705492973328,
+        "p95": 140.52644878625864,
+        "p99": 179.68702632188794,
+        "max": 189.4771707057953,
+        "mean": 50.87356188893318
+      },
+      "resolution_openings": 10,
+      "stale_submissions": 7
+    },
+    "actor-d": {
+      "completed": 8,
+      "not_completed": [],
+      "queue_age_lower_seconds": {
+        "n": 13,
+        "min": 0,
+        "p50": 0.03928112983703613,
+        "p95": 0.1919117927551268,
+        "p99": 0.24527170181274405,
+        "max": 0.25861167907714844,
+        "mean": 0.0671383417569674
+      },
+      "publish_to_integrated_seconds": {
+        "n": 8,
+        "min": 0.22718071937561035,
+        "p50": 17.55342745780945,
+        "p95": 54.3780208468437,
+        "p99": 63.77363635778426,
+        "max": 66.12254023551941,
+        "mean": 20.800174295902252
+      },
+      "task_seconds": {
+        "n": 8,
+        "min": 24.521467924118042,
+        "p50": 43.82634258270264,
+        "p95": 84.09059052467346,
+        "p99": 88.30175953865051,
+        "max": 89.35455179214478,
+        "mean": 47.65601649880409
+      },
+      "resolution_openings": 10,
+      "stale_submissions": 5
+    }
+  },
+  "starvation_observation": {
+    "all_planned_features_integrated": true,
+    "unfinished_count": 0,
+    "observation_is_bounded": true,
+    "no_general_fairness_or_saturation_claim": true
+  },
+  "manual_integration_or_conflict_rescue_interventions": 0,
+  "measurement_notes": [
+    "Queue-age lower bound uses client publication return to automatic integration call start; conservative upper bound uses publication request start to integration call return, including service/lock overhead. Values clamp to zero when calls overlap. Exact internal admission/service times were not instrumented.",
+    "Exact queue depth reconstructed by durable event sequence, not coarse wall clock.",
+    "Root latency includes model author conflict resolution and stale reopens; integration-call latency is separate.",
+    "Four independently reasoning native agents, not standalone Codex CLI/Claude Code product sessions.",
+    "Source projection only: no HTTP webhook delivery, ChatGPT notifications, external provider or live credentials.",
+    "One fixed-order workload has no matched batch comparator and cannot establish optimal publication size or saturation."
+  ],
+  "core_binary_sha256": "ded60ad5c3a533d01cf646228f03f38e7e3aa5b45941da115f5e6429233d9a51",
+  "final_head": "0e3af1acb9275802d05d4eea25cff4d675b851bc",
+  "privacy": {
+    "private_workspaces_checked": 32,
+    "all_original_wip_hashes_unchanged": true,
+    "checkpoint_tracked_files_unchanged_except_designated_unsaved_marker": true,
+    "checkpoint_tracked_file_checks": 622,
+    "private_checkpoint_oids_absent_from_public_store": true,
+    "private_checkpoint_leaks": [],
+    "public_store_objects_scanned": 336,
+    "public_blobs_scanned": 110,
+    "public_blob_bytes_scanned": 538714,
+    "all_public_blobs_marker_free": true,
+    "leaked_blob_oids": [],
+    "public_ref_tree_private_paths": []
+  },
+  "source_projection": {
+    "busy_status_reads": 2805,
+    "complete": true,
+    "core_binary_sha256": "ded60ad5c3a533d01cf646228f03f38e7e3aa5b45941da115f5e6429233d9a51",
+    "counts": {
+      "action_required": 14,
+      "proposal.integrated": 32,
+      "public_head.advanced": 32
+    },
+    "duplicate_event_ids": false,
+    "event_count": 78,
+    "kind": "actual-native-agent-campaign-source-only-observer",
+    "polls": 26219,
+    "restart_no_replay_verified": true,
+    "seconds": 566.922438171,
+    "source_degraded_seen": false,
+    "source_only": true,
+    "started_at": 1792331965,
+    "stop_reason": "sentinel",
+    "successful_status_reads": 23413,
+    "webhook_delivery_chain": false,
+    "obsolete_action_ids_count": 14
+  },
+  "semantic_oracle": {
+    "frozen_before_run": true,
+    "sha256": "7688a757fcf87e128c4ddaf05673c670a361d2dd62fba1e83967671fe2034c50",
+    "snapshots_checked": 32,
+    "fully_passing_snapshots": 2,
+    "final_checks": 5780,
+    "final_failures": 8,
+    "all_32_feature_fields_present": true,
+    "sole_failing_feature": "C1 date_range: no valid dates returned {start:null,end:null}; required null",
+    "blind_result": "FAIL: semantic contract defect despite author unit tests passing"
+  },
+  "administrative_setup_interventions": 1,
+  "administrative_setup_limitation": "Fourth actor launch was delayed66seconds by native-agent slot contention; automatic integrator and earlier actors continued. No integration/conflict rescue."
+}
