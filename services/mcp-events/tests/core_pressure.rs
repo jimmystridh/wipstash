@@ -231,7 +231,9 @@ fn parallel_cli_conflicts_handback_and_source_observation() {
     let binary = std::env::var_os("WIPSTASH_CORE_BINARY")
         .map(PathBuf::from)
         .unwrap_or_else(|| {
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/debug/wipstash")
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../target/debug")
+                .join(format!("wipstash{}", std::env::consts::EXE_SUFFIX))
         });
     assert!(
         binary.is_file(),

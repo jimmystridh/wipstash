@@ -62,7 +62,9 @@ fn main() {
         !root.join("observer.stop").exists(),
         "stop sentinel already exists; use a fresh campaign"
     );
-    let binary = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/debug/wipstash");
+    let binary = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../target/debug")
+        .join(format!("wipstash{}", std::env::consts::EXE_SUFFIX));
     let hash = digest(&SHA256, &fs::read(&binary).unwrap())
         .as_ref()
         .iter()
