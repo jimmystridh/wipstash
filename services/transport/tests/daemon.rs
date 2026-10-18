@@ -72,7 +72,7 @@ impl Fixture {
             authority: "central".into(),
             epoch: 1,
             device: "central-device".into(),
-            acl,
+            acl: acl.into(),
             ca: root.join("ca"),
             certificate: root.join("certificate"),
             key: root.join("key").into(),

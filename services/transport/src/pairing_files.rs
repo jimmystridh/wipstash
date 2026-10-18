@@ -123,13 +123,15 @@ mod platform {
     fn name(path: &Path) -> io::Result<CString> {
         CString::new(path.as_os_str().as_bytes()).map_err(|_| denied("invalid_private_path"))
     }
+    // C varargs require integer promotion; macOS mode_t is narrower than c_uint.
+    #[allow(clippy::unnecessary_cast)]
     fn open_at(parent: &File, name: &CString, flags: i32, mode: libc::mode_t) -> io::Result<File> {
         let fd = unsafe {
             libc::openat(
                 parent.as_raw_fd(),
                 name.as_ptr(),
                 flags | libc::O_CLOEXEC | libc::O_NOFOLLOW,
-                mode,
+                mode as libc::c_uint,
             )
         };
         if fd < 0 {

@@ -942,7 +942,7 @@ mod tests {
     }
     fn fixture() -> Fixture {
         let temp = tempfile::tempdir().unwrap();
-        let private = temp.path().join("private");
+        let private = temp.path().canonicalize().unwrap().join("private");
         crate::pairing_files::ensure_private_dir(&private).unwrap();
         let path = private.join("pairing.sqlite3");
         let store = PairingStore::open(&path).unwrap();
@@ -1331,7 +1331,7 @@ mod tests {
     #[test]
     fn readonly_authorization_never_creates_missing_database() {
         let temp = tempfile::tempdir().unwrap();
-        let dir = temp.path().join("private");
+        let dir = temp.path().canonicalize().unwrap().join("private");
         crate::pairing_files::ensure_private_dir(&dir).unwrap();
         let path = dir.join("missing.sqlite3");
         let source = AclSource::Managed {
@@ -1376,7 +1376,7 @@ mod tests {
     #[test]
     fn unknown_database_is_not_reconfigured_or_adopted() {
         let temp = tempfile::tempdir().unwrap();
-        let dir = temp.path().join("private");
+        let dir = temp.path().canonicalize().unwrap().join("private");
         crate::pairing_files::ensure_private_dir(&dir).unwrap();
         let path = dir.join("unrelated.sqlite3");
         crate::pairing_files::create_private_file(&path, &[]).unwrap();

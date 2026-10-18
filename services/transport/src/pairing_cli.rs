@@ -1,9 +1,9 @@
 //! Guided, restartable pairing. No credential is accepted in command arguments.
 use crate::{error, Result};
-#[cfg(all(test, unix))]
-use std::fs;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+#[cfg(all(test, unix))]
+use std::fs;
 use std::{
     collections::BTreeMap,
     io::Read,
@@ -979,7 +979,8 @@ mod tests {
     fn exact_join_material_survives_restart_and_refuses_new_profile() {
         use std::os::unix::fs::PermissionsExt;
         let temp = tempfile::tempdir().unwrap();
-        fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        fs::set_permissions(root.as_path(), fs::Permissions::from_mode(0o700)).unwrap();
         let p = synthetic_profile();
         let intent = JoinIntent {
             version: 1,
@@ -989,23 +990,24 @@ mod tests {
             key_pem: "synthetic-only-key".into(),
             scope: p.scope.clone(),
         };
-        save(&temp.path().join("join-intent.json"), &intent).unwrap();
-        let resumed: JoinIntent = load(&temp.path().join("join-intent.json")).unwrap();
+        save(&root.as_path().join("join-intent.json"), &intent).unwrap();
+        let resumed: JoinIntent = load(&root.as_path().join("join-intent.json")).unwrap();
         assert_eq!(resumed.request_id, intent.request_id);
         assert_eq!(resumed.csr_der, intent.csr_der);
         assert_eq!(resumed.key_pem, intent.key_pem);
-        save(&temp.path().join("join-profile-intent.json"), &p).unwrap();
+        save(&root.as_path().join("join-profile-intent.json"), &p).unwrap();
         let mut changed = p;
         changed.state = "/synthetic/different-state".into();
-        assert!(save(&temp.path().join("join-profile-intent.json"), &changed).is_err());
+        assert!(save(&root.as_path().join("join-profile-intent.json"), &changed).is_err());
     }
     #[cfg(unix)]
     #[test]
     fn journal_is_create_only_private_and_restartable() {
         use std::os::unix::fs::PermissionsExt;
         let temp = tempfile::tempdir().unwrap();
-        fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o700)).unwrap();
-        let path = temp.path().join("intent.json");
+        let root = temp.path().canonicalize().unwrap();
+        fs::set_permissions(root.as_path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let path = root.as_path().join("intent.json");
         let expected =
             json!({"request_id":"synthetic-request","csr_der":[1,2,3],"key":"synthetic-only"});
         save(&path, &expected).unwrap();
@@ -1023,13 +1025,14 @@ mod tests {
     async fn doctor_is_read_only_for_pending_join() {
         use std::os::unix::fs::PermissionsExt;
         let temp = tempfile::tempdir().unwrap();
-        fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o700)).unwrap();
-        let path = temp.path().join("join-intent.json");
+        let root = temp.path().canonicalize().unwrap();
+        fs::set_permissions(root.as_path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let path = root.as_path().join("join-intent.json");
         save(&path, &json!({"synthetic":"pending"})).unwrap();
         let before = read_private(&path).unwrap();
         inspect(
             Flags::parse(
-                &["--directory".into(), temp.path().to_str().unwrap().into()],
+                &["--directory".into(), root.as_path().to_str().unwrap().into()],
                 &["--directory"],
             )
             .unwrap(),
@@ -1038,15 +1041,16 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(read_private(&path).unwrap(), before);
-        assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 1);
+        assert_eq!(fs::read_dir(root.as_path()).unwrap().count(), 1);
     }
     #[cfg(unix)]
     #[tokio::test]
     async fn conflicting_engine_binding_rejects_before_key_or_network() {
         use std::os::unix::fs::PermissionsExt;
         let temp = tempfile::tempdir().unwrap();
-        fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o700)).unwrap();
-        let engine = temp.path().join("synthetic-engine");
+        let root = temp.path().canonicalize().unwrap();
+        fs::set_permissions(root.as_path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let engine = root.as_path().join("synthetic-engine");
         fs::write(&engine,b"#!/bin/sh\nprintf '%s\\n' '{\"ok\":true,\"state\":\"configured\",\"initialized\":true,\"config\":{\"project\":\"wrong-project\"}}'\n").unwrap();
         fs::set_permissions(&engine, fs::Permissions::from_mode(0o700)).unwrap();
         let profile = synthetic_profile();
@@ -1057,15 +1061,15 @@ mod tests {
             expires_at: now().unwrap() + 900,
             scope: profile.scope,
         };
-        let invite = temp.path().join("invite");
+        let invite = root.as_path().join("invite");
         save(&invite, &invitation).unwrap();
-        let dest = temp.path().join("client");
+        let dest = root.as_path().join("client");
         let flags = Flags::parse(
             &[
                 "--directory".into(),
                 dest.to_str().unwrap().into(),
                 "--state".into(),
-                temp.path().join("state").to_str().unwrap().into(),
+                root.as_path().join("state").to_str().unwrap().into(),
                 "--engine".into(),
                 engine.to_str().unwrap().into(),
                 "--invite-file".into(),
@@ -1084,10 +1088,11 @@ mod tests {
     fn symlinks_and_public_invites_are_rejected() {
         use std::os::unix::fs::{symlink, PermissionsExt};
         let temp = tempfile::tempdir().unwrap();
-        fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o700)).unwrap();
-        let real = temp.path().join("real");
+        let root = temp.path().canonicalize().unwrap();
+        fs::set_permissions(root.as_path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let real = root.as_path().join("real");
         write_private(&real, b"synthetic").unwrap();
-        let link = temp.path().join("link");
+        let link = root.as_path().join("link");
         symlink(&real, &link).unwrap();
         assert!(read_private(&link).is_err());
         fs::set_permissions(&real, fs::Permissions::from_mode(0o644)).unwrap();

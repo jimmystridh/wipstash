@@ -29,7 +29,9 @@ jobs:
           cargo build --locked
           python3 tests/sync_peer_authorization.py
           cargo test --locked --manifest-path services/transport/Cargo.toml
-          cargo clippy --locked --manifest-path services/transport/Cargo.toml --all-targets -- -D warnings
+      - name: Collect strict transport diagnostics independently
+        if: always()
+        run: cargo clippy --locked --manifest-path services/transport/Cargo.toml --all-targets -- -D warnings
       - name: Save only dependency lock and reviewed-source formatting
         if: always()
         uses: actions/upload-artifact@v4

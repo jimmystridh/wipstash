@@ -96,7 +96,7 @@ async fn retained_transfers_cannot_cross_authority_epoch() {
         authority: "central".into(),
         epoch: 2,
         device: "central-device".into(),
-        acl,
+        acl: acl.into(),
         ca: root.join("unused-ca"),
         certificate: root.join("unused-cert"),
         key: root.join("unused-key").into(),

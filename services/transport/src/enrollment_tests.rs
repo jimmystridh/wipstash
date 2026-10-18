@@ -18,6 +18,7 @@ impl TlsFixture {
     fn new() -> Self {
         let mut params = CertificateParams::new(Vec::<String>::new()).unwrap();
         params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+        params.serial_number = Some(rcgen::SerialNumber::from_slice(&[1]));
         params.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
         let ca_key = KeyPair::generate().unwrap();
         let ca = params.self_signed(&ca_key).unwrap();
@@ -72,29 +73,39 @@ impl TlsFixture {
 
 #[tokio::test]
 async fn wrong_pin_sends_no_http_or_invite_bytes() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    struct SecretProbe(Arc<AtomicUsize>);
+    impl Serialize for SecretProbe {
+        fn serialize<S: serde::Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            serializer.serialize_str("synthetic-secret-must-never-be-sent")
+        }
+    }
     let fixture = TlsFixture::new();
-    let client =
-        EnrollmentClient::new(fixture.roots(), "enroll.test".into(), "00".repeat(32)).unwrap();
+    let client = EnrollmentClient::new(fixture.roots(), "enroll.test".into(), "00".repeat(32)).unwrap();
     let (client_io, server_io) = tokio::io::duplex(65536);
     let tls = fixture.server();
     let observed = tokio::spawn(async move {
-        let mut stream = tokio_rustls::TlsAcceptor::from(tls)
-            .accept(server_io)
-            .await
-            .unwrap();
-        let mut bytes = Vec::new();
-        // A TLS close without close_notify may return UnexpectedEof; bytes are the assertion.
-        let _ = stream.read_to_end(&mut bytes).await;
-        bytes
+        let accepted = tokio_rustls::TlsAcceptor::from(tls).accept(server_io).await;
+        match accepted {
+            Ok(mut stream) => {
+                let mut bytes = Vec::new();
+                let _ = stream.read_to_end(&mut bytes).await;
+                bytes
+            }
+            Err(error) => {
+                // The client can close after pin validation while the server is
+                // still finishing its handshake/session-ticket writes.
+                assert!(matches!(error.kind(), std::io::ErrorKind::BrokenPipe
+                    | std::io::ErrorKind::UnexpectedEof | std::io::ErrorKind::ConnectionReset));
+                Vec::new()
+            }
+        }
     });
-    let result: Result<Value> = client
-        .request_stream(
-            client_io,
-            ENROLL,
-            &json!({"secret":"synthetic-secret-must-never-be-sent"}),
-        )
-        .await;
+    let serializations = Arc::new(AtomicUsize::new(0));
+    let result: Result<Value> = client.request_stream(client_io, ENROLL, &SecretProbe(serializations.clone())).await;
     assert_eq!(result.unwrap_err().to_string(), "enrollment_pin_mismatch");
+    assert_eq!(serializations.load(Ordering::SeqCst), 0);
     assert!(observed.await.unwrap().is_empty());
 }
 

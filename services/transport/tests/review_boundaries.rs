@@ -123,7 +123,7 @@ async fn relative_service_paths_and_zero_epoch_fail_before_spawn() {
             0 => c.engine = "relative".into(),
             1 => c.state = "relative".into(),
             2 => c.staging = "relative".into(),
-            _ => c.acl = "relative".into(),
+            _ => c.acl = PathBuf::from("relative").into(),
         }
         match Service::new(c).await {
             Err(e) => assert_eq!(e.to_string(), "absolute_config_paths_required"),
