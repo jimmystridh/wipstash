@@ -133,7 +133,30 @@ async def run(args):
             await page.get_by_role('button',name='Shared history',exact=True).click()
             await expect(page.locator('.history-entry')).to_have_count(2)
             await expect(page.locator('.scope-pill')).to_contain_text('Shared scope')
+            await page.locator('.file-row',has_text='docs/unicode.txt').click()
+            await expect(page.locator('.diff-path')).to_contain_text('docs/unicode.txt')
+            await expect(page.locator('.diff-scroll')).to_contain_text('café 日本語 🚀')
+            await expect(page.locator('.loading-state')).to_have_count(0)
+            mobile_width=await page.evaluate('({viewport:innerWidth, page:Math.max(document.documentElement.scrollWidth, document.body.scrollWidth)})')
+            assert mobile_width['page']<=mobile_width['viewport']+1, mobile_width
             await page.screenshot(path=str(out/'mobile.png'),full_page=True)
+            # Finish real-state assertions before taking clearly labelled synthetic previews.
+            assert manifest(state)==before, 'Real UI inspection modified state'
+            assert {k:manifest(v) for k,v in fixture['workspaces'].items()}==live, 'Real UI inspection modified workspaces'
+            real_api_count=len([e for e in events if 'api' in e])
+            await page.set_viewport_size({'width':1440,'height':1000})
+            await page.evaluate("localStorage.setItem('wipstash-theme','dark')")
+            await page.goto('http://127.0.0.1:47831/?demo=1',wait_until='networkidle')
+            await expect(page.locator('.demo-banner')).to_contain_text('Synthetic workspace and source data')
+            await expect(page.locator('.inspector')).to_have_class('inspector')
+            await page.locator('.file-row',has_text='src/checkpoint.rs').click()
+            await expect(page.locator('.diff-scroll')).to_contain_text('fs::rename(&staged, &path)?;')
+            await expect(page.locator('.loading-state')).to_have_count(0)
+            await page.screenshot(path=str(out/'demo-dark.png'),full_page=True)
+            await page.get_by_label('Switch light or dark theme').click()
+            await expect(page.locator('.inspector')).to_have_class('inspector light')
+            await page.screenshot(path=str(out/'demo-light.png'),full_page=True)
+            assert len([e for e in events if 'api' in e])==real_api_count, 'Synthetic preview unexpectedly called live API'
         except Exception as exc:
             try:
                 await page.screenshot(path=str(out/'failure.png'),full_page=True)

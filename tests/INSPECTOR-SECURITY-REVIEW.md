@@ -29,11 +29,15 @@ Retained evidence is generated under the requested artifact directory: `fixture.
 3. Public proposal inspection selected original local storage unconditionally. Prefer public objects, retain local fallback for offline proposals; independently verified with local stores unavailable.
 4. The UI sent an empty workspace filter for All workspaces while the API treated it as an exact empty ID. API now normalizes empty to no filter; independently verified.
 
-## Browser validation boundary
+## Browser validation and transport boundary
 
-`tests/inspector_browser.py` is prepared for an environment where Chromium launch is permitted. It intercepts every request: assets come from the local WASM bundle and API calls execute the service's in-memory CLI. External requests are aborted; no application listener is started. Planned assertions cover actual WASM workspace/history/file selection, private/shared separation, literal HTML/Unicode rendering, binary/truncation notices, split/unified/wrap, failure/retry, keyboard help, theme, and mobile screenshots.
+The real WASM browser suite **passed in authorized Ubuntu CI** for commit `6e5b651`, run `39081768039`. The retained browser report records 46 API requests, zero page exceptions or dialogs, and unchanged state/workspace manifests. The single HTTP 503 console error is the deliberately injected failure/retry case. Screenshots and the JSON report were retained as CI artifacts and reviewed by the parent task.
 
-**This browser script has not been executed in the restricted cloud environment.** The parent's Chromium launch encountered a denied socket operation, and no retry or bypass was attempted. There is no claim of local visual QA or browser interaction success. The real TCP HTTP adapter was not exercised through a listener either; service-owner parser unit tests and source review complement the in-memory route tests. Run browser/transport checks in an authorized CI or desktop environment before claiming end-to-end browser validation.
+`tests/inspector_browser.py` intercepts every request: assets come from the built WASM bundle and API calls execute the service's in-memory CLI. Responses use the same production security headers, including CSP, as the service's HTTP adapter. External requests are aborted; no application listener is started. Passed assertions cover actual WASM workspace/history/file selection, private/shared separation, literal HTML/Unicode rendering, binary/truncation notices, split layout and wrap, failure/retry, keyboard help, theme, and mobile workspace/private/shared navigation.
+
+The first mobile screenshot was captured before its final diff finished loading. Follow-up runner assertions now wait for a selected Unicode source diff, check that the mobile page has no horizontal overflow (internal code scrolling is allowed), and capture explicitly labelled synthetic dark/light previews. These additional visual assertions await a subsequent CI run; the first passing run does not establish their success.
+
+**No browser was run successfully in the restricted cloud environment.** The parent's local Chromium launch encountered a denied socket operation; no retry or bypass was attempted. Browser execution occurred in authorized CI. The real TCP HTTP adapter was not exercised through a listener: this establishes WASM/UI behavior under production CSP with intercepted transport, not live-TCP end-to-end behavior. Service-owner parser unit tests and source review complement the in-memory route tests.
 
 Example authorized-CI sequence (after building both binaries and the WASM bundle):
 

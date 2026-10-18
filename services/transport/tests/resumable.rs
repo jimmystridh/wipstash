@@ -173,7 +173,11 @@ fn engine(state: &std::path::Path, request: serde_json::Value) -> serde_json::Va
         .output()
         .unwrap();
     let value = serde_json::from_slice(&output.stdout).unwrap();
-    assert!(output.status.success(), "{value}");
+    assert!(
+        output.status.success(),
+        "request={request}; response={value}; stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     value
 }
 #[tokio::test]

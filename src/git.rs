@@ -287,7 +287,14 @@ fn real_directory(path: &Path) -> Result<()> {
             return Err("unsupported_tree: parent directory traversal".into());
         }
         prefix.push(component);
-        let metadata = fs::symlink_metadata(&prefix).map_err(err)?;
+        // A Windows drive prefix alone is drive-relative (C:) or an incomplete
+        // verbatim namespace (\\?\C:), not an ancestor directory. Inspect
+        // it only after the following root separator has been appended.
+        if matches!(component, std::path::Component::Prefix(_)) {
+            continue;
+        }
+        let metadata = fs::symlink_metadata(&prefix)
+            .map_err(|e| format!("directory_metadata_error: {}: {e}", prefix.display()))?;
         if metadata.file_type().is_symlink() || !metadata.is_dir() {
             return Err(format!(
                 "unsupported_tree: directory component is not a real directory: {}",
@@ -783,6 +790,23 @@ mod tests {
             let _ = fs::remove_dir_all(&self.0);
         }
     }
+    #[test]
+    fn canonical_directory_components_include_root_not_bare_prefix() {
+        let t = Temp::new();
+        // canonicalize produces a verbatim drive path on Windows. The scanner
+        // must inspect its root and real descendants, never the bare prefix.
+        let root = fs::canonicalize(&t.0).unwrap();
+        assert!(real_directory(&root).is_ok());
+        let child = root.join("child");
+        fs::create_dir(&child).unwrap();
+        assert!(real_directory(&child).is_ok());
+        let file = child.join("file");
+        fs::write(&file, b"fixture").unwrap();
+        assert!(real_directory(&file).is_err());
+        assert!(real_directory(&file.join("descendant")).is_err());
+        assert!(real_directory(&root.join("missing")).is_err());
+    }
+
     #[test]
     fn exact_roundtrip_and_exclusions() {
         let t = Temp::new();

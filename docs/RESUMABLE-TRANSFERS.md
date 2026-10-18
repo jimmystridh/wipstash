@@ -138,3 +138,15 @@ References: [SQLite atomic commit and persistent journals](https://www.sqlite.or
 [SQLite PRAGMAs](https://www.sqlite.org/pragma.html),
 [Windows FlushFileBuffers](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-flushfilebuffers),
 [Windows CreateFile metadata flushing](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilew).
+
+### Separate core filesystem limits on Windows
+
+The SQLite staging contract above is not a blanket durability claim for every
+trusted-core filesystem operation. Core Git materialization and directory-based
+artifact export currently flush regular files but only perform directory-entry
+flushes on Unix. Their Windows namespace durability has not been established by
+this transport work. Core adoption also still depends on Unix-style directory
+flushing and is not a supported Windows durable-adoption path; its failures must
+not be ignored or converted to successful flushes. Passing native resumable
+integration establishes functional import/replay, not physical power-loss
+survival of all core Git, export, or adoption paths.

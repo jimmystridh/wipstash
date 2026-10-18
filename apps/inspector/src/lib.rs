@@ -451,7 +451,7 @@ pub fn DiffView(patch: Diff, split_view: bool, wrap: bool) -> Element {
                 div { class: "split-head", span { "BASE" } span { "SNAPSHOT" } }
                 div { class: "split-diff", role: "table", aria_label: "Side-by-side source diff",
                     for (index, row) in diff::split(&lines).iter().enumerate() {
-                        if let Some(heading) = &row.heading { div { key: "h{index}", class: "split-meta", role: "row", "{heading}" } }
+                        if let Some(heading) = &row.heading { div { key: "h{index}", class: if heading.starts_with("@@ ") { "split-meta hunk" } else { "split-meta" }, role: "row", "{heading}" } }
                         else { div { key: "r{index}", class: "split-row", role: "row",
                             for (side, line) in [("left", &row.left), ("right", &row.right)] { div { class: if let Some(l) = line { format!("split-cell {}", l.kind) } else { "split-cell blank".into() }, role: "cell",
                                 if let Some(l) = line { span { class: "line-number", {(if side == "left" { l.old } else { l.new }).map(|n| n.to_string()).unwrap_or_default()} } code { "{l.text}" } } else { span { class: "line-number", " " } code { " " } }
