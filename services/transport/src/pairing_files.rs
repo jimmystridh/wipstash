@@ -554,7 +554,10 @@ mod platform {
             bInheritHandle: 0,
         };
         let access = if directory {
-            FILE_READ_ATTRIBUTES | READ_CONTROL
+            // Metadata-only handles are excluded from Windows share checks.
+            // Directory-data access makes no-delete-sharing pin the pathname;
+            // do not fall back to attribute-only access if listing is denied.
+            FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | READ_CONTROL
         } else if create || writable {
             GENERIC_READ | GENERIC_WRITE | READ_CONTROL
         } else {
@@ -1038,6 +1041,36 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn private_directory_guard_blocks_leaf_and_ancestor_substitution() {
+        let (_root, path) = fixture();
+        let ancestor = path.parent().unwrap();
+        let moved = ancestor.join("moved-private");
+        let moved_ancestor = ancestor.with_extension("moved");
+        let directory = PrivateDirectory::open(&path).unwrap();
+        assert!(std::fs::rename(&path, &moved).is_err());
+        assert!(std::fs::remove_dir(&path).is_err());
+        assert!(std::fs::rename(ancestor, &moved_ancestor).is_err());
+        // The stronger pin still permits normal publication and simultaneous
+        // validated readers; no ACL or share-mode relaxation is necessary.
+        let second = PrivateDirectory::open(&path).unwrap();
+        directory
+            .create("first", b"complete private bytes")
+            .unwrap();
+        assert_eq!(second.read("first", 64).unwrap(), b"complete private bytes");
+        second.create("second", b"second publication").unwrap();
+        assert_eq!(directory.read("second", 64).unwrap(), b"second publication");
+        std::fs::remove_file(path.join("first")).unwrap();
+        std::fs::remove_file(path.join("second")).unwrap();
+        drop(second);
+        drop(directory);
+        std::fs::rename(&path, &moved).unwrap();
+        std::fs::remove_dir(&moved).unwrap();
+        std::fs::rename(ancestor, &moved_ancestor).unwrap();
+        std::fs::rename(&moved_ancestor, ancestor).unwrap();
     }
 
     #[cfg(windows)]

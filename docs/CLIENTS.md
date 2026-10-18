@@ -292,3 +292,10 @@ These are cooperative workspace guarantees: stop external/unmanaged writers
 before adoption. Directory handles do not create a hostile-writer sandbox.
 Windows readonly live/staged adoption inputs are rejected before mutation;
 Wipstash does not silently clear their readonly protection.
+
+Windows directory guards for both adoption and private client files require
+`FILE_LIST_DIRECTORY` plus their existing metadata permissions on each ancestor.
+This minimal directory-data access makes the no-delete-sharing restriction
+participate in Windows sharing checks; attribute-only handles do not provide that
+protection. Inaccessible/listing-denied ancestors fail closed. Wipstash does not
+change ACLs or grant extra directory access to make the operation succeed.

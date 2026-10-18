@@ -246,8 +246,10 @@ mod windows {
         Ok(value)
     }
 
-    // No delete sharing pins the directory and every ancestor for the lifetime
-    // of this guard. OPEN_REPARSE_POINT checks the opened object, including
+    // Directory-data access is necessary for Windows share checks: an
+    // attribute-only handle does not enforce omission of FILE_SHARE_DELETE.
+    // No delete sharing then pins every ancestor for this guard's lifetime.
+    // OPEN_REPARSE_POINT checks the opened object, including
     // junctions and non-symlink reparse tags, without following it.
     pub(super) fn pin_directory(path: &Path) -> Result<Vec<File>> {
         let path = absolute(path)?;
@@ -261,7 +263,7 @@ mod windows {
             }
             let file = OpenOptions::new()
                 .read(true)
-                .access_mode(FILE_READ_ATTRIBUTES)
+                .access_mode(FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES)
                 .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
                 .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
                 .open(&cursor)
@@ -796,10 +798,24 @@ mod tests {
     fn windows_parent_guard_prevents_directory_substitution() {
         let t = Sandbox::new();
         let root = t.dir("root");
+        let moved = t.0.join("moved");
+        let moved_ancestor = t.0.with_extension("moved");
         let guard = windows::pin_directory(&root).unwrap();
         assert!(fs::rename(&root, t.0.join("moved")).is_err());
+        assert!(fs::remove_dir(&root).is_err());
+        assert!(fs::rename(&t.0, &moved_ancestor).is_err());
+        // Pin the directory's identity without blocking normal child mutations.
+        let source = root.join("staging");
+        let destination = root.join("published");
+        fs::write(&source, "complete").unwrap();
+        publish(&source, &destination, false).unwrap();
+        assert_eq!(fs::read(&destination).unwrap(), b"complete");
+        fs::remove_file(&destination).unwrap();
         drop(guard);
-        fs::rename(&root, t.0.join("moved")).unwrap();
+        fs::rename(&root, &moved).unwrap();
+        fs::remove_dir(&moved).unwrap();
+        fs::rename(&t.0, &moved_ancestor).unwrap();
+        fs::rename(&moved_ancestor, &t.0).unwrap();
     }
     #[cfg(windows)]
     #[test]

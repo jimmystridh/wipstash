@@ -141,3 +141,13 @@ Windows adoption now uses a reviewed local-filesystem path with an explicit
 [durability boundary](CLIENTS.md#windows-adoption-durability-boundary), fail-closed
 readonly/reparse handling, and native-only path/sharing/recovery tests. Native CI
 must still establish runtime acceptance of that follow-on on all three platforms.
+
+The next native Windows run caught an additional real negative-test failure:
+a directory rename succeeded while the adoption guard was held. Review traced
+this to metadata-only access, which does not participate in Windows data-access
+sharing checks; the reused private-file guard had the same pattern. A repository
+search found those two implementations. The follow-on correction requests the
+minimal directory-list access in both and adds native leaf/ancestor rename/removal
+regressions without weakening existing assertions, DACLs or reparse checks.
+The [Windows sharing algorithm](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-fsa/8c0e3f4f-0729-49f4-a14d-7f7add593819)
+explains the access-mask distinction; native tests remain the acceptance gate.
