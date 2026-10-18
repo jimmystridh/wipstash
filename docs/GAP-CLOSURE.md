@@ -9,7 +9,7 @@ Updated 18 October 2026. This is implementation work on the cooperative prototyp
 - **Policy and repair:** validated policy and durable repair attempt/time reservations survive restart. Repair defaults to confined-or-unavailable; the explicit `trusted_unsandboxed` profile is for trusted development fixtures. Live bubblewrap execution was blocked by NETLINK_ROUTE restrictions; no live confinement claim follows from contract tests.
 - **Public recovery v2:** published intent, public ownership, original queue eligibility/order, operation identity, replay metadata and policy identity are preserved. Restored execution remains fenced until explicit review, old-authority-stopped assertion, matching policy and exact sync binding. Private checkpoints/workspaces and executable policy are excluded. Legacy v1 recovery still needs review and republishing.
 - **Storage:** bounded inputs, available-space preflight, object verification and explicit syncs; a separate conservative loose-object collector and storage admission service have 32 reported tests. This is not automatic checkpoint expiry, a full retention manager or a power-loss guarantee.
-- **Agent conflict handback:** status/updates expose resolution tasks; the submitting agent uses an isolated public-snapshot checkout and deliberately checkpoints/resubmits. Private WIP is untouched, unrelated queued work continues, and new proposals pass integration policy again. New workflow verification is pending; real model sessions remain unverified. See [CONFLICTS.md](CONFLICTS.md).
+- **Agent conflict handback:** status/updates expose resolution tasks; the submitting agent uses an isolated public-snapshot checkout and deliberately checkpoints/resubmits. Private WIP is untouched, unrelated queued work continues, and new proposals pass integration policy again. A six-arm native model-agent pilot at `c489e00` drained 45 integrated snapshots and 39 superseded predecessors with conflict/check-failure recovery and private WIP preserved. Standalone Codex/Claude product sessions remain unverified. See [pilot evidence](REAL-AGENT-VALIDATION.md). See [CONFLICTS.md](CONFLICTS.md).
 - **Client interface:** bounded MCP lifecycle, typed workflow tools, hostile-frame tests and client examples. Claude Code 2.1.302 completed an actual stdio handshake and tool discovery. Codex configuration parsing passed; model smoke was blocked by the read-only app-server environment. Neither result establishes model-driven collaboration or writer interception.
 - **Native adapters:** lifecycle, IPC and credential-vault adapters exist. Earlier Windows GNU/macOS Darwin cross-checks were followed by passing native Linux/macOS/Windows CI contracts. Full Windows adoption, broader filesystem behavior, arbitrary process containment and real credential-store acceptance remain open.
 - **Authenticated transport:** mTLS service/client code binds certificate identity to project/device ACLs, rechecks revocation and uses quarantined source admission. Durable replay, outbox retries and resumable upload code extend independent client/authority exchange. In-memory security/transfer contracts are now supplemented by actual native-CI loopback listeners and four scripted device identities exercising guided pairing, managed SQLite authorization, revocation, rotation and server restart. The separate real-TLS upload-fault campaign also passed on Linux CI; deployed multi-host LAN/WAN remains unverified.
@@ -49,3 +49,29 @@ Functional commit `1488774be3582fb0322de74f1071245ced08f114` passed [native CI 3
 Real-TLS artifact `12124098556` passed: four device identities, two owned server restarts, a retained offset of 262,144 bytes, eight upload attempts, one pre-send drop, one post-commit lost acknowledgment, one cross-device rejection, six certificate/ACL rejections and two integrated publications. Every stored public Git blob, including unreachable objects, was audited. The earlier fixture-permission and `sequence_gap` failures are superseded by the corrected passing run.
 
 These results apply to the named functional commit and artifacts. Any later release revision needs its own passing CI; this evidence does not establish deployed multi-host WAN operation or completion of the full production specification.
+
+## Agent conflict pilot and unresolved platform gate
+
+The [real-model pilot](REAL-AGENT-VALIDATION.md) is tied to functional source
+`c489e00ea284127389e29e9e9875eb6db26132b2` and binary SHA256
+`615cfde843bffb96db0b86093b0db98c067d2b511986ebadac4a873d5cdb9627`.
+All six arms drained, including required-check recovery; 45 integrated snapshots
+passed independent semantic validation and original private WIP stayed intact.
+Native model coding agents are distinct evidence from deterministic tests and
+from standalone Codex CLI/Claude Code product sessions.
+
+The matched reuse comparison was 49.49s for three-feature batches versus 187.67s
+for one-feature publications, with fixed-order and other confounds. It supports
+measuring coherent batching at hotspots, not a universal sizing rule. Peak queue
+depth was three, so engine saturation was not shown. Seven stale reopens on the
+worst lineage and 171.61s backlog submit-to-integration p95 versus 0.291s active
+integration-call p95 identify coordination churn as the measured bottleneck.
+
+At `c489e00`, Linux's three scripted stress seeds and macOS/browser jobs passed,
+but the full run was not green. At diagnostic checkpoint `324dbb3`,
+[native run 39108002633](https://github.com/jimmystridh/wipstash/actions/runs/39108002633)
+passed Windows, macOS and browser jobs. Linux passed all functional suites,
+including the corrected restore fixture, then failed formatting before Clippy.
+The earlier Windows concurrent-storage `SQLITE_IOERR` was not reproduced; it is
+not fixed or explained. A further three-seed Windows campaign is required.
+No main-branch promotion, release completion or closure of broader gates is claimed.

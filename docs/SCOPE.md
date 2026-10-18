@@ -19,11 +19,11 @@ The implementation here is a **cooperative local-first prototype with selected n
 | Autonomous integration | `worker` loop plus explicit `integrate`; conflicts quarantine and unrelated proposals continue | Local process/storage fixtures plus service worker code; deployed service behavior remains unverified |
 | Per-operation command lifecycle | Unix process group cleanup, command timeout, durable pre-launch intent/generation and explicit recovery fence | Escaped descendants can survive; recovery requires caller assertion that writers stopped, not proof of containment |
 | Crash recovery | Promotion intent/CAS journal and adoption staging/rollback/finalization | Named process termination failpoints; retained storage restart, not power loss or lost disk |
-| Optional checks/repair | Validated trusted argv workers, candidate checkouts, bounded execution/output, durable repair reservations and explicit evidence | Scripted worker fixtures and confined-or-unavailable dispatch; actual model repair and live sandbox execution remain unverified |
-| Agent publication-conflict handback | Actionable task, isolated public-snapshot checkout and explicit checkpoint/resubmission, bounded lineage and stale-tip checks; see [CONFLICTS.md](CONFLICTS.md) | New conflict-handback verification pending; real Codex/Claude resolution sessions remain unverified |
+| Optional checks/repair | Validated trusted argv workers, candidate checkouts, bounded execution/output, durable repair reservations and explicit evidence | Scripted worker fixtures and confined-or-unavailable dispatch; automatic confined model-repair dispatch and live sandbox execution remain unverified |
+| Agent publication-conflict handback | Actionable task, isolated public-snapshot checkout and explicit checkpoint/resubmission, bounded lineage and stale-tip checks; see [CONFLICTS.md](CONFLICTS.md) | Six-arm native model-agent pilot at `c489e00` drained 45 integrated/39 superseded proposals with private WIP preserved; standalone Codex/Claude sessions remain unverified; see [pilot](REAL-AGENT-VALIDATION.md) |
 | Explicit private conflict resolution | `resolve_adoption` binds candidate, target, generation and current checkpoint | Local explicit-caller resolution only; not automatic private editing |
 | Local history/diff inspection | Separate read-only SQLite/Git API and Dioxus WASM UI, loopback only, no engine mutation calls | Synthetic four-workspace/API tests and bounded diff/SSR checks; browser interception and real-HTTP browser CI each passed 53 tests at the feature checkpoint below; deployed acceptance is separate |
-| Agent access | JSON CLI/stdin plus bounded MCP lifecycle, typed workflow tools and generic tool | Scripted protocol tests, Codex configuration parsing and Claude Code 2.1.302 stdio handshake/tool discovery; model-driven workflows remain unverified |
+| Agent access | JSON CLI/stdin plus bounded MCP lifecycle, typed workflow tools and generic tool | Scripted protocol tests, Codex configuration parsing and Claude Code 2.1.302 stdio handshake/tool discovery; standalone product model-driven workflows remain unverified; separate native-agent CLI pilot is documented |
 | OS-local IPC | Unix socket implementation with 0600 socket permissions | Historical cloud bind attempt was denied with `EPERM`; native platform CI now exercises selected IPC contracts. No cloud-local listener execution is claimed |
 | Offline save/replay | Missing coordinator-store detection; local queued proposals and cached heads | Local outage fixtures plus delayed/dropped/replayed artifacts between independent client/authority states; no actual network outage |
 | Authenticated LAN/WAN and authority epochs | Typed admission, durable replay/epoch binding and quarantined public source exchange wired to independent client/authority engines | Artifact origin remains operator-asserted on the filesystem path; the separate mTLS service binds certificate identity and rechecks ACL/revocation. In-memory contracts plus native CI real-loopback guided pairing, managed revocation/rotation and restart; no deployed multi-host pairing, remote fencing or migration drill; see NETWORK.md |
@@ -121,3 +121,28 @@ Real-TLS artifact `12124098556` passed: four device identities, two owned server
 These results apply to the named functional commit and artifacts. Any later release revision needs its own passing CI; this evidence does not establish deployed multi-host WAN operation or completion of the full production specification.
 
 All pairing credentials and grants in this evidence are disposable synthetic test fixtures. No real user credentials, native credential-vault provisioning or public endpoint deployment is claimed. See [NETWORK.md](NETWORK.md) and the [test harness guide](../tests/README.md) for the distinct live-CI guards and remaining gates.
+
+## Native model-agent pilot and current conflict release gate
+
+[REAL-AGENT-VALIDATION.md](REAL-AGENT-VALIDATION.md) records six measured arms at
+`c489e00ea284127389e29e9e9875eb6db26132b2`: 45 validated integrated snapshots,
+39 superseded predecessors, all lineages drained and private-WIP canaries
+preserved. These are genuine native coding agents, not standalone Codex CLI or
+Claude Code sessions. The pilot does not exercise confined repair dispatch,
+remote transport, backup/restore or other operating systems.
+
+The fixed-order matched-code comparison favored batches (49.49s versus 187.67s),
+but does not establish a universal publication-size rule. Queue depth peaked at
+three; no saturation claim follows. The backlog arm's seven stale reopens on its
+worst lineage and 171.61s submit-to-integration p95 versus 0.291s active-integration
+p95 show a coordination tail that requires broader fairness testing.
+
+The `c489e00` Linux stress seeds and macOS/browser jobs passed, not the entire
+revision. Diagnostic `324dbb3`,
+[run 39108002633](https://github.com/jimmystridh/wipstash/actions/runs/39108002633),
+passed Windows, macOS and browser jobs and Linux functional suites, including
+the corrected restore fixture. Linux failed formatting before Clippy. The prior
+Windows concurrent-storage `SQLITE_IOERR` is unreproduced, not fixed or explained;
+a further three-seed Windows campaign remains required. No all-platform final
+pass, main promotion or release completion is claimed. Earlier successful
+native/pairing checkpoints remain separately valid.

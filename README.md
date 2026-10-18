@@ -134,9 +134,9 @@ Imagine one bot changing an API, one updating its caller, one writing tests, and
 4. The test bot checks for updates and adopts when ready. If adoption conflicts with its private work, the live workspace stays unchanged and an explicit resolution path is available.
 5. Everyone can inspect proposal status and operation records instead of guessing what a timeout meant. Resolution retries are bounded, stale shared tips require a fresh review, and configured checks run again before promotion.
 
-Keep publications small and intentional. Conflicts are returned to the submitting agent through status/updates and MCP; Wipstash does not start a background model session to fix them. [Conflict handback and safe Codex/Claude workflow →](docs/CONFLICTS.md)
+Keep publications intentional and scoped to coherent tasks; this is agent guidance, not an enforced size rule. Conflicts are returned to the submitting agent through status/updates and MCP; Wipstash does not start a background model session to fix them. [Conflict handback and safe Codex/Claude workflow →](docs/CONFLICTS.md)
 
-That is the workflow the test harness exercises with **four deterministic scripted actors**. Claude Code stdio initialization and tool discovery have been verified; actual model-driven Codex/Claude workflows and arbitrary native-writer containment remain release gates.
+The test harness exercises this with **four deterministic scripted actors**. A separate [six-arm native model-agent pilot](docs/REAL-AGENT-VALIDATION.md) at `c489e00` drained 45 integrated snapshots and 39 superseded predecessors with private WIP preserved. It exposed stale-head coordination costs; it did not establish saturation or an optimal publication size. Claude Code stdio initialization and tool discovery have been verified; actual model-driven Codex/Claude workflows and arbitrary native-writer containment remain release gates.
 
 ## Why Git underneath?
 
@@ -172,7 +172,7 @@ Git remains the storage and merge foundation. Wipstash adds the boundary between
 | --- | --- |
 | Private checkpoints, publication, integration, adoption | Implemented and exercised with real CLI/Git/SQLite on Linux; cooperative writers required |
 | Independent stores and receipts | Implemented explicit artifact exchange, ordered replay, object verification, and targeted proposal observations |
-| CLI and stdio MCP | Implemented; Claude Code 2.1.302 stdio handshake/tool discovery verified, Codex configuration parsing verified; model-driven workflows remain unverified |
+| CLI and stdio MCP | Implemented; Claude Code 2.1.302 stdio handshake/tool discovery verified, Codex configuration parsing verified; standalone Codex/Claude model-driven workflows remain unverified; separate native-agent CLI pilot documented |
 | Conflict handback | Explicit isolated resolution checkout, checkpoint and replacement submission; bounded attempts and stale-tip validation. See [workflow and evidence boundary](docs/CONFLICTS.md) |
 | Checks and repair | Empty by default; durable repair budgets and confined-or-unavailable repair dispatch. Linux sandbox execution is not verified in this environment; no bundled model worker |
 | Public recovery | Version 2 preserves public intent, ownership, queue order, operation identity and replay metadata; restored execution stays fenced until explicit operator activation. Private WIP is excluded |

@@ -18,9 +18,16 @@ fn sql<T>(v: rusqlite::Result<T>) -> R<T> {
     v.map_err(|e| match &e {
         rusqlite::Error::SqliteFailure(code, _) => format!(
             "storage_error: {e}; sqlite_code={:?}; extended_code={}; site={}:{}",
-            code.code, code.extended_code, caller.file(), caller.line()
+            code.code,
+            code.extended_code,
+            caller.file(),
+            caller.line()
         ),
-        _ => format!("storage_error: {e}; site={}:{}", caller.file(), caller.line()),
+        _ => format!(
+            "storage_error: {e}; site={}:{}",
+            caller.file(),
+            caller.line()
+        ),
     })
 }
 fn sqlite_diagnostics_requested(value: Option<&str>) -> bool {
@@ -29,8 +36,12 @@ fn sqlite_diagnostics_requested(value: Option<&str>) -> bool {
 fn sqlite_phase(started: std::time::Instant, phase: &str) {
     if sqlite_diagnostics_requested(std::env::var("WIPSTASH_SQLITE_DIAGNOSTICS").ok().as_deref()) {
         // Fixed phase labels only: no SQL, request payloads, or user paths.
-        eprintln!("wipstash_sqlite_phase pid={} phase={} elapsed_ms={}",
-            std::process::id(), phase, started.elapsed().as_millis());
+        eprintln!(
+            "wipstash_sqlite_phase pid={} phase={} elapsed_ms={}",
+            std::process::id(),
+            phase,
+            started.elapsed().as_millis()
+        );
     }
 }
 fn io<T>(v: std::io::Result<T>) -> R<T> {
@@ -1539,8 +1550,15 @@ mod sqlite_diagnostic_tests {
     #[test]
     fn extended_io_error_preserves_primary_code_and_callsite() {
         let code = rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_IOERR_SHMSIZE);
-        let error = sql::<()>(Err(rusqlite::Error::SqliteFailure(code, Some("disk I/O error".into())))).unwrap_err();
-        assert!(error.starts_with("storage_error: disk I/O error; sqlite_code="), "{error}");
+        let error = sql::<()>(Err(rusqlite::Error::SqliteFailure(
+            code,
+            Some("disk I/O error".into()),
+        )))
+        .unwrap_err();
+        assert!(
+            error.starts_with("storage_error: disk I/O error; sqlite_code="),
+            "{error}"
+        );
         assert!(error.contains("extended_code=4874"), "{error}");
         assert!(error.contains("engine.rs:"), "{error}");
         assert_eq!(error.split(':').next(), Some("storage_error"));

@@ -12,7 +12,7 @@ jobs:
     defaults:
       run:
         shell: bash
-    timeout-minutes: 40
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -91,7 +91,7 @@ jobs:
           WIPSTASH_SQLITE_DIAGNOSTICS: '1'
         run: |
           seeds="731927"
-          if [[ "${{ runner.os }}" == "Linux" ]]; then
+          if [[ "${{ runner.os }}" == "Linux" || "${{ runner.os }}" == "Windows" ]]; then
             seeds="731927 991337 20261018"
           fi
           for seed in $seeds; do

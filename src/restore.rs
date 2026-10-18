@@ -555,11 +555,7 @@ mod tests {
             let git = Git::open(&source.join("coordinator.git"));
             let root = git.head("refs/wipstash/integration").unwrap();
             let proposal = git
-                .commit(
-                    &git.empty_tree().unwrap(),
-                    &[root],
-                    "proposal pending",
-                )
+                .commit(&git.empty_tree().unwrap(), &[root], "proposal pending")
                 .unwrap();
             git.set_ref("refs/wipstash/proposals/pending", &proposal, None)
                 .unwrap();

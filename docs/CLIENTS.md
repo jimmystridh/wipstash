@@ -65,7 +65,9 @@ operations, such as explicit integration and managed commands.
 3. Read status for `generation`; pass it as `expected_generation` where required.
    Give every mutation a fresh `operation_id`, retaining the exact request.
 4. Checkpoint saves private WIP even if the source is broken. Publish only a
-   deliberately selected checkpoint with an explicit intent. Integration does
+   deliberately selected checkpoint with an explicit intent, following caller
+   authorization and client approval settings; this does not require a human
+   approval for each already-authorized publication. Integration does
    not change another actor's working files.
 5. Query updates and explicitly adopt when ready. Read `resolution_tasks` on
    status/updates and `resolution_task` on proposal status. For a quarantined
@@ -80,6 +82,15 @@ operations, such as explicit integration and managed commands.
    This is an operator assertion, not proof of process-tree containment.
 
 ## Evidence and release gates
+
+A [six-arm native coding-agent pilot](REAL-AGENT-VALIDATION.md) at
+`c489e00ea284127389e29e9e9875eb6db26132b2` verified bounded local model-driven
+conflict/check-failure resolution and resubmission with private WIP preserved:
+45 integrated snapshots and 39 superseded predecessors, with all lineages drained.
+These were genuine autonomous model agents using the CLI, not standalone Codex
+CLI or Claude Code product sessions; this does not establish MCP product-client
+acceptance or close writer-containment, remote and platform gates.
+
 
 `cargo test --locked client::tests` checks transport/session behavior without
 invoking storage. `python3 tests/mcp_protocol.py` drives the compiled executable
