@@ -30,7 +30,7 @@ use tokio::{
 };
 
 pub const REQUEST_MAX: usize = 24 * 1024;
-pub const RESPONSE_MAX: usize = 32 * 1024;
+pub const RESPONSE_MAX: usize = crate::pairing::MAX_ENROLLMENT_RESPONSE_BYTES;
 pub const CSR_MAX: usize = 8 * 1024;
 const HEADER_MAX: usize = 16 * 1024;
 const DEADLINE: Duration = Duration::from_secs(10);

@@ -19,6 +19,7 @@ use subtle::ConstantTimeEq;
 
 pub const VERSION: u32 = 1;
 pub const MAX_CSR_BYTES: usize = 8192;
+pub const MAX_ENROLLMENT_RESPONSE_BYTES: usize = 32 * 1024;
 pub const MAX_DEVICES: i64 = 100;
 pub const MAX_INVITES: i64 = 1000;
 pub const MAX_CERTIFICATES: i64 = 1000;
@@ -563,7 +564,7 @@ impl PairingStore {
             generation,
             request_id: request.request_id.clone(),
         };
-        let saved = serde_json::to_string(&response)?;
+        let saved = bounded_enrollment_response(&response)?;
         if saved.len() > 32 * 1024 {
             tx.commit()?;
             return Err(error("enrollment_response_bound"));
@@ -746,6 +747,15 @@ impl PairingStore {
             revoked: false,
         })
     }
+}
+
+// Refuse an unsendable response before committing certificate authorization.
+fn bounded_enrollment_response(response: &EnrollmentResponse) -> Result<String> {
+    let encoded = serde_json::to_string(response)?;
+    if encoded.len() > MAX_ENROLLMENT_RESPONSE_BYTES {
+        return Err(error("enrollment_response_bound"));
+    }
+    Ok(encoded)
 }
 
 fn configure(conn: &Connection) -> Result<()> {
@@ -1414,6 +1424,42 @@ mod tests {
             assert!(valid_name(bad).is_err());
         }
     }
+    #[test]
+    fn oversized_response_never_commits_a_grant() {
+        let mut f = fixture();
+        let key = rcgen::KeyPair::generate().unwrap();
+        let mut params = rcgen::CertificateParams::default();
+        params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+        params.key_usages = vec![rcgen::KeyUsagePurpose::KeyCertSign];
+        params.serial_number = Some(rcgen::SerialNumber::from_slice(&[1]));
+        params.distinguished_name = rcgen::DistinguishedName::new();
+        params
+            .distinguished_name
+            .push(rcgen::DnType::CommonName, "X".repeat(6000));
+        let ca = params.self_signed(&key).unwrap();
+        f.scope.ca_certificate_der = ca.der().to_vec();
+        let issuer = Issuer::from_pem(&ca.pem(), &key.serialize_pem(), f.now).unwrap();
+        let invite = f
+            .store
+            .create_invite(f.scope.clone(), f.now + 60, f.now)
+            .unwrap();
+        let local = generate_local_csr().unwrap();
+        let failure = f
+            .store
+            .redeem(&request(&invite, &local), &issuer, f.now)
+            .unwrap_err();
+        assert_eq!(failure.to_string(), "enrollment_response_bound");
+        let connection = f.store.connection.lock().unwrap();
+        let count: i64 = connection
+            .query_row("SELECT count(*) FROM certificates", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 0);
+        let state: String = connection
+            .query_row("SELECT state FROM invites", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(state, "pending");
+    }
+
     #[cfg(unix)]
     #[test]
     fn insecure_database_or_journal_and_symlink_are_rejected() {
