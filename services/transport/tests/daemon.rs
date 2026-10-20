@@ -226,6 +226,32 @@ impl PeerSync for MemoryPeer {
     }
 }
 #[tokio::test]
+async fn authority_run_validates_in_background_without_holding_the_state_lock() {
+    let f = Fixture::new().await;
+    // The check itself reads authority state. It would deadlock if validation
+    // retained the state lock while waiting for the child process.
+    run(
+        &f.c.state,
+        json!({"op":"configure","operation_id":"async-worker-policy","policy":{"checks":[{"id":"authority-read","argv":[engine_path(),"--state",f.c.state,json!({"op":"ignore_templates"}).to_string()],"timeout_seconds":15}]}}),
+    );
+    let mut worker = AuthorityWorker::open(engine_path(), f.c.state.clone(), f.c.staging.clone())
+        .await
+        .unwrap();
+    let task = tokio::spawn(async move { worker.run().await });
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(45);
+    loop {
+        let health = run(&f.c.state, json!({"op":"validation_status"}));
+        if health["repo_health"]["state"] == "passed" {
+            break;
+        }
+        assert!(tokio::time::Instant::now() < deadline, "{health}");
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    task.abort();
+    let _ = task.await;
+}
+
+#[tokio::test]
 async fn durable_worker_replays_lost_ack_and_polls_immutable_receipts() {
     let f = Fixture::new().await;
     let service = Service::new(f.c.clone()).await.unwrap();
@@ -642,4 +668,134 @@ async fn backup_failure_preserves_successful_source_promotion() {
         )["state"],
         "integrated"
     );
+}
+
+struct AuditRetryPeer {
+    inner: MemoryPeer,
+    fail: Arc<AtomicBool>,
+    calls: Arc<std::sync::atomic::AtomicUsize>,
+}
+impl PeerSync for AuditRetryPeer {
+    fn flush_audit(&self) -> Reply<'_> {
+        Box::pin(async move {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            if self.fail.load(Ordering::SeqCst) {
+                return Err("audit_offline".into());
+            }
+            Ok(json!({"ok":true,"synced":true,"pending":0}))
+        })
+    }
+    fn upload<'a>(&'a self, proposal: &'a str, operation: &'a str) -> Reply<'a> {
+        self.inner.upload(proposal, operation)
+    }
+    fn catch_up(&self) -> Reply<'_> {
+        self.inner.catch_up()
+    }
+    fn current_receipt<'a>(&'a self, proposal: &'a str) -> Reply<'a> {
+        self.inner.current_receipt(proposal)
+    }
+}
+#[tokio::test]
+async fn audit_backoff_survives_restart_without_blocking_source_catch_up() {
+    let f = Fixture::new().await;
+    let service = Service::new(f.c.clone()).await.unwrap();
+    let mut authority =
+        AuthorityWorker::open(engine_path(), f.c.state.clone(), f.c.staging.clone())
+            .await
+            .unwrap();
+    authority.tick().await.unwrap();
+    let fail = Arc::new(AtomicBool::new(true));
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let peer = || AuditRetryPeer {
+        inner: MemoryPeer {
+            service: service.clone(),
+            cert: f.cert.clone(),
+            state: f.alice.clone(),
+            staging: f.c.staging.clone(),
+            lose_upload: Arc::new(AtomicBool::new(false)),
+        },
+        fail: fail.clone(),
+        calls: calls.clone(),
+    };
+    let mut worker = Worker::open(engine_path(), f.alice.clone(), peer())
+        .await
+        .unwrap();
+    assert_eq!(worker.tick(0).await.unwrap()["audit_failures"], 1);
+    assert!(run(&f.alice, json!({"op":"status"}))["head"].is_string());
+    drop(worker);
+    fail.store(false, Ordering::SeqCst);
+    let mut worker = Worker::open(engine_path(), f.alice.clone(), peer())
+        .await
+        .unwrap();
+    worker.tick(1).await.unwrap();
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    let result = worker.tick(2).await.unwrap();
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    assert_eq!(result["audit_failures"], 0);
+    assert_eq!(result["audit"]["synced"], true);
+}
+
+struct CoordinationRetryPeer {
+    inner: MemoryPeer,
+    fail: Arc<AtomicBool>,
+    calls: Arc<std::sync::atomic::AtomicUsize>,
+}
+impl PeerSync for CoordinationRetryPeer {
+    fn flush_coordination(&self) -> Reply<'_> {
+        Box::pin(async move {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            if self.fail.load(Ordering::SeqCst) {
+                return Err("coordination_offline".into());
+            }
+            Ok(json!({"ok":true,"synced":true,"pending":0}))
+        })
+    }
+    fn upload<'a>(&'a self, proposal: &'a str, operation: &'a str) -> Reply<'a> {
+        self.inner.upload(proposal, operation)
+    }
+    fn catch_up(&self) -> Reply<'_> {
+        self.inner.catch_up()
+    }
+    fn current_receipt<'a>(&'a self, proposal: &'a str) -> Reply<'a> {
+        self.inner.current_receipt(proposal)
+    }
+}
+#[tokio::test]
+async fn coordination_backoff_survives_restart_without_blocking_source_catch_up() {
+    let f = Fixture::new().await;
+    let service = Service::new(f.c.clone()).await.unwrap();
+    let mut authority =
+        AuthorityWorker::open(engine_path(), f.c.state.clone(), f.c.staging.clone())
+            .await
+            .unwrap();
+    authority.tick().await.unwrap();
+    let fail = Arc::new(AtomicBool::new(true));
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let peer = || CoordinationRetryPeer {
+        inner: MemoryPeer {
+            service: service.clone(),
+            cert: f.cert.clone(),
+            state: f.alice.clone(),
+            staging: f.c.staging.clone(),
+            lose_upload: Arc::new(AtomicBool::new(false)),
+        },
+        fail: fail.clone(),
+        calls: calls.clone(),
+    };
+    let mut worker = Worker::open(engine_path(), f.alice.clone(), peer())
+        .await
+        .unwrap();
+    assert_eq!(worker.tick(0).await.unwrap()["coordination_failures"], 1);
+    assert!(run(&f.alice, json!({"op":"status"}))["head"].is_string());
+    drop(worker);
+    fail.store(false, Ordering::SeqCst);
+    let mut worker = Worker::open(engine_path(), f.alice.clone(), peer())
+        .await
+        .unwrap();
+    worker.tick(1).await.unwrap();
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    let result = worker.tick(2).await.unwrap();
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    assert_eq!(result["coordination_failures"], 0);
+    assert_eq!(result["coordination"]["synced"], true);
 }

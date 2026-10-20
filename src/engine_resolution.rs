@@ -62,7 +62,7 @@ pub(super) fn task(db: &Connection, proposal: &str) -> R<Option<Value>> {
     let lineage = lineage(db, proposal)?;
     let attempt = lineage["attempt"].as_i64().unwrap_or(0);
     Ok(Some(
-        json!({"proposal":proposal,"workspace":wid,"state":if attempt >= MAX_ATTEMPTS {"escalated"} else {"action_required"},"reason":if details["evaluation_error"].is_string() {"policy_evaluation_failed"} else if details["conflicted"] == true && details["repaired"] != true {"merge_conflict"} else {"required_checks_failed"},"diagnosis":details["evaluation_error"],"base":base,"proposal_commit":commit,"current_head":details["head"],"input_tree":details["input_tree"],"candidate_tree":details["candidate_tree"],"sides":{"base":base,"current":details["head"],"proposal":commit},"checkout_basis":"Fresh merge of latest available public head and public proposal; previous repair output is evidence only","conflict_paths":details.get("conflict_paths").cloned().unwrap_or(json!([])),"checks":details.get("checks").cloned().unwrap_or(json!([])),"policy_sha256":details["policy_sha256"],"attempt":attempt,"max_attempts":MAX_ATTEMPTS,"lineage":lineage,"next_action":if attempt >= MAX_ATTEMPTS {"Review and publish a deliberately new proposal if further work is authorized."} else {"Use resolution_open for an isolated checkout, checkpoint the explicit fix, then resolution_submit. Original workspace is unchanged."},"semantic_correctness_claimed":false}),
+        json!({"proposal":proposal,"workspace":wid,"state":if attempt >= MAX_ATTEMPTS {"escalated"} else {"action_required"},"reason":if details["evaluation_error"].is_string() {"policy_evaluation_failed"} else if details["conflicted"] == true && details["repaired"] != true {"merge_conflict"} else {"required_checks_failed"},"diagnosis":details["evaluation_error"],"base":base,"proposal_commit":commit,"current_head":details["head"],"input_tree":details["input_tree"],"candidate_tree":details["candidate_tree"],"sides":{"base":base,"current":details["head"],"proposal":commit},"checkout_basis":"Fresh merge of latest available public head and public proposal; previous repair output is evidence only","conflict_paths":details.get("conflict_paths").cloned().unwrap_or(json!([])),"checks":details.get("checks").cloned().unwrap_or(json!([])),"policy_sha256":details["policy_sha256"],"attempt":attempt,"max_attempts":MAX_ATTEMPTS,"lineage":lineage,"next_action":if attempt >= MAX_ATTEMPTS {"Stop and obtain an operator decision; do not start new submissions to evade the resolution limit."} else {"Use resolution_open for an isolated checkout, edit the fix, then commit that workspace with its exact resolution_head and conflict-path attestation. Original workspace is unchanged."},"semantic_correctness_claimed":false}),
     ))
 }
 pub(super) fn tasks(db: &Connection, r: &Value) -> R<Value> {
@@ -84,6 +84,7 @@ fn owned(db: &Connection, r: &Value) -> R<Value> {
     let proposal = field(r, "proposal")?;
     let wid = field(r, "workspace")?;
     ws(db, wid)?;
+    lifecycle::ensure_open(db, wid)?;
     let owner: String = sql(db.query_row(
         "SELECT workspace FROM proposals WHERE id=?1",
         [proposal],
@@ -116,7 +117,7 @@ fn latest_public_head(state: &Path, db: &Connection, task: &Value) -> R<String> 
     Err("inconsistent_authority_history: receipt and cached head diverge; synchronize authority history before resolving".into())
 }
 // Missing paths (deletions/renames) are distinct from corruption or Git failure.
-fn public_file(git: &Git, tree: &str, path: &str) -> R<Option<Vec<u8>>> {
+pub(super) fn public_file(git: &Git, tree: &str, path: &str) -> R<Option<Vec<u8>>> {
     let listing = git.run(&["ls-tree", "-r", "-z", "--full-tree", tree], None)?;
     for item in listing.split(|b| *b == 0).filter(|s| !s.is_empty()) {
         let tab = item
@@ -303,7 +304,18 @@ pub(super) fn open(state: &Path, db: &Connection, r: &Value) -> R<Value> {
             "UPDATE resolution_sessions SET state='open' WHERE id=?1",
             [id],
         ))?;
-        let result = json!({"ok":true,"state":"open","resolution_workspace":wid,"path":path,"generation":0,"current_head":head,"conflict_paths":serde_json::from_str::<Value>(&conflicts).map_err(|e|e.to_string())?,"task":task,"side_paths":side_paths,"sides":{"base":task["base"],"current":head,"proposal":task["proposal_commit"]},"cached":sync::is_client(db)?,"files_changed_in_original_workspace":false});
+        let local_side = side_paths.remove("proposal").unwrap();
+        let shared_side = side_paths.remove("current").unwrap();
+        side_paths.insert("local".into(), local_side);
+        side_paths.insert("shared".into(), shared_side);
+        let detailed = experience::conflict_details(
+            &git,
+            field(&task, "base")?,
+            field(&task, "proposal_commit")?,
+            &head,
+            &serde_json::from_str::<Vec<String>>(&conflicts).map_err(|e| e.to_string())?,
+        )?;
+        let result = json!({"ok":true,"state":"open","resolution_workspace":wid,"path":path,"generation":0,"current_head":head,"conflict_paths":serde_json::from_str::<Value>(&conflicts).map_err(|e|e.to_string())?,"task":task,"side_paths":side_paths,"result_path":path,"completion":"commit","conflict":{"origin":"commit","paths":detailed,"conflict_paths":serde_json::from_str::<Value>(&conflicts).map_err(|e|e.to_string())?,"sides":{"base":task["base"],"local":task["proposal_commit"],"shared":head}},"sides":{"base":task["base"],"shared":head,"local":task["proposal_commit"]},"cached":sync::is_client(db)?,"files_changed_in_original_workspace":false});
         finish(db, id, &result)?;
         event(
             db,
@@ -399,6 +411,42 @@ fn prepared_proposal(git: &Git, owner: &Git, id: &str, tree: &str, head: &str) -
     let commit = git.commit(tree, &[head.to_owned()], &format!("proposal {id}"))?;
     git.set_ref(&reference, &commit, Some(&"0".repeat(commit.len())))?;
     Ok(commit)
+}
+
+pub(super) fn preflight(db: &Connection, r: &Value) -> R<()> {
+    let wid = field(r, "workspace")?;
+    let session:Option<(String,String,String,String,String)>=sql(db.query_row("SELECT owner,proposal,head,conflicts,state FROM resolution_sessions WHERE workspace=?1",[wid],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).optional())?;
+    let Some((owner, proposal, head, paths, phase)) = session else {
+        return Ok(());
+    };
+    if phase == "completed" {
+        return Ok(());
+    }
+    if phase == "submitted" {
+        let done:bool=sql(db.query_row("SELECT EXISTS(SELECT 1 FROM proposals p JOIN checkpoints c ON c.id=p.checkpoint WHERE c.workspace=?1 AND p.state IN ('integrated','already_included'))",[wid],|r|r.get(0)))?;
+        if done {
+            sql(db.execute(
+                "UPDATE resolution_sessions SET state='completed' WHERE workspace=?1",
+                [wid],
+            ))?;
+            return Ok(());
+        }
+        return Err(
+            "resolution_pending: observe the submitted resolution result before another commit"
+                .into(),
+        );
+    }
+    owned(db, &json!({"workspace":owner,"proposal":proposal}))?;
+    if r["expected_head"] != head {
+        return Err(
+            "stale_resolution: expected_head must match the prepared resolution_head".into(),
+        );
+    }
+    conflicts::attest(
+        r,
+        &serde_json::from_str::<Value>(&paths).map_err(|e| e.to_string())?,
+    )?;
+    Ok(())
 }
 
 pub(super) fn submit(state: &Path, db: &Connection, r: &Value) -> R<Value> {

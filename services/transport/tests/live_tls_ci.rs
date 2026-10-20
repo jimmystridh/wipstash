@@ -100,6 +100,7 @@ fn client(ca: &Certificate, cert: &Certificate, key: &KeyPair, pin: &str) -> Cli
         ),
         server_name: "localhost".into(),
         authority_fingerprint: pin.into(),
+        cloud: None,
     }
 }
 fn history_body() -> Vec<u8> {
@@ -513,6 +514,7 @@ async fn scenario() {
         ),
         server_name: "localhost".into(),
         authority_fingerprint: pin.clone(),
+        cloud: None,
     };
     assert!(request(
         &no_certificate,

@@ -5,13 +5,13 @@ coordinator. Hosting, certificate provisioning, firewall configuration and DNS a
 operator responsibilities. Native GitHub CI has run real loopback listeners and
 four independently enrolled scripted device identities on Linux, macOS and Windows.
 This supersedes the earlier no-listener evidence boundary, but deployed multi-host
-LAN/WAN operation remains unverified. No public endpoint, real credential vault or
-production credentials have been provisioned; CI generates disposable synthetic
-CAs, certificates and invitations.
+LAN/WAN operation remains unverified. The native CI scenarios use disposable synthetic CAs, certificates and invitations; they do not establish real vault or production-credential acceptance. The separately provisioned Cloud Run demo is documented below and in [CLOUD-RUN.md](CLOUD-RUN.md).
 
 ## Trust boundary
 
-Every sync connection requires TLS client authentication against the configured CA.
+[Cloud Run hosting](CLOUD-RUN.md) is an explicit additional backend with signed HTTPS requests and generation-fenced object storage. The native mTLS trust boundary below remains unchanged.
+
+Every native sync connection requires TLS client authentication against the configured CA.
 Guided pairing uses a separate server-authenticated TLS enrollment endpoint with
 invitation authorization and proof of possession; it does not expose sync routes or
 permit unauthenticated sync access.
@@ -26,11 +26,13 @@ The server executes one configured engine binary against one configured state
 path. Requests cannot select executables, state paths, policy, repair commands or
 shell operations. Received objects are quarantined and verified before admission.
 
+The CLI queries exact-head validation and server timings through authenticated `/v1/validation`; central audit reads use `/v1/audit-log`. Cloud delivery uses the existing bounded whole-artifact import with retained operation identity and duplicate-safe retries. Native mTLS retains resumable transfers. Both use the same `wip add` / `wip commit` workflow.
+
 ## Components
 
 Use [guided remote pairing](PAIRING.md) for normal setup, invitation, join, device
-revocation and replacement. `wipstash remote setup` generates the protected
-authority profile without starting listeners; `wipstash remote serve` explicitly
+revocation and replacement. `wip remote setup` generates the protected
+authority profile without starting listeners; `wip remote serve` explicitly
 starts the separate enrollment and sync endpoints. `remote join` verifies a
 read-only authenticated connection and does not publish or adopt source.
 
@@ -38,13 +40,12 @@ The following legacy/manual commands remain supported:
 
 - `wipstash-transport serve /absolute/service.json`: authenticated authority service
   plus its serialized autonomous integration worker.
-- `wipstash-transport worker /absolute/client.json`: durable client outbox and head /
-  receipt polling. Only explicitly published proposals are eligible for upload.
+- `wip sync` performs one explicit durable client outbox, coordination, audit and head/receipt pass. Source delivery normally runs inside Commit. There is no installed client polling service.
 - `wipstash-transport client /absolute/client.json '<operation JSON>'`: one explicit
   upload, download or catch-up operation.
 
 The exact strict configuration fields are defined by `Config` in
-`services/transport/src/lib.rs` and `ClientConfig` in `src/main.rs`. All engine,
+`services/transport/src/lib.rs` and `ClientConfig` in `services/transport/src/settings.rs`. All engine,
 state, staging and certificate paths must be operator-controlled. State and staging
 must be separate, disjoint directories outside source workspaces. Keep private-key
 files outside source repositories and never publish real configuration files.

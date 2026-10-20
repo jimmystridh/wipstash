@@ -1,27 +1,9 @@
 use serde::Deserialize;
 use serde_json::Value;
-use std::{net::SocketAddr, path::PathBuf};
 use wipstash_transport::daemon::{AuthorityWorker, Worker};
-use wipstash_transport::{Client, Config, KeySource, Result, Service, Workstation};
+use wipstash_transport::{Config, Result, Service};
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ClientConfig {
-    engine: PathBuf,
-    state: PathBuf,
-    staging: PathBuf,
-    ca: PathBuf,
-    certificate: PathBuf,
-    key: KeySource,
-    server_name: String,
-    authority_fingerprint: String,
-    address: SocketAddr,
-    project: String,
-    authority: String,
-    epoch: u64,
-    device: String,
-    authority_device: String,
-}
+use wipstash_transport::settings::ClientConfig;
 #[derive(Deserialize)]
 #[serde(tag = "op", deny_unknown_fields)]
 enum Operation {
@@ -36,12 +18,48 @@ enum Operation {
         operation_id: String,
         proposal: Option<String>,
     },
+    #[serde(rename = "audit_flush")]
+    AuditFlush,
+    #[serde(rename = "coordination_flush")]
+    CoordinationFlush,
     #[serde(rename = "catch_up")]
     CatchUp,
 }
 #[tokio::main]
 async fn main() -> Result<()> {
     let args: Vec<_> = std::env::args().collect();
+    if args.len() == 3 && args[1] == "cloud-route" {
+        use base64::Engine;
+        use tokio::io::AsyncReadExt;
+        let config: Config = serde_json::from_slice(&std::fs::read(&args[2])?)?;
+        let mut input = Vec::new();
+        tokio::io::stdin()
+            .take((wipstash_transport::WIRE_MAX * 2) as u64)
+            .read_to_end(&mut input)
+            .await?;
+        let value: Value = serde_json::from_slice(&input)?;
+        let decode = |field: &str| -> Result<Vec<u8>> {
+            Ok(base64::engine::general_purpose::STANDARD
+                .decode(value[field].as_str().ok_or("missing_field")?)?)
+        };
+        let service = Service::new(config).await?;
+        let result = service
+            .route(
+                &decode("certificate")?,
+                value["method"].as_str().ok_or("missing_method")?,
+                value["path"].as_str().ok_or("missing_path")?,
+                &decode("body")?,
+            )
+            .await;
+        let result = match result {
+            Ok((kind, bytes)) => {
+                serde_json::json!({"ok":true,"content_type":kind,"body":base64::engine::general_purpose::STANDARD.encode(bytes)})
+            }
+            Err(e) => serde_json::json!({"ok":false,"error":e.to_string()}),
+        };
+        println!("{result}");
+        return Ok(());
+    }
     if wipstash_transport::pairing_cli::run(&args[1..]).await? {
         return Ok(());
     }
@@ -62,25 +80,7 @@ async fn main() -> Result<()> {
         return Err("usage: wipstash-transport serve /absolute/service.json | worker /absolute/client.json | client /absolute/client.json '<JSON operation>'".into());
     }
     let c: ClientConfig = serde_json::from_slice(&std::fs::read(&args[2])?)?;
-    let client = Client::from_key_source(
-        &c.ca,
-        &c.certificate,
-        &c.key,
-        c.server_name,
-        c.authority_fingerprint,
-    )?;
-    let w = Workstation {
-        client,
-        address: c.address,
-        engine: c.engine,
-        state: c.state,
-        staging: c.staging,
-        project: c.project,
-        authority: c.authority,
-        epoch: c.epoch,
-        device: c.device,
-        authority_device: c.authority_device,
-    };
+    let w = c.connect()?;
     if background {
         let mut worker = Worker::open(w.engine.clone(), w.state.clone(), w).await?;
         return worker.run().await;
@@ -99,6 +99,8 @@ async fn main() -> Result<()> {
                 .await?
         }
         Operation::CatchUp => w.catch_up().await?,
+        Operation::AuditFlush => w.flush_audit().await?,
+        Operation::CoordinationFlush => w.flush_coordination().await?,
     };
     println!("{}", result);
     Ok(())

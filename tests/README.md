@@ -1,3 +1,13 @@
+# Current agent workflow coverage
+
+`uv run --no-project python tests/cli.py` exercises the installed interface: exact staging, unstaging, discovery, independent clones, shared commits, conflict review, task comments, lifecycle, audit and process-crash recovery. Build both binaries with `cargo build --bins` first. `WIP_BINARY` selects a release CLI. No model sessions, MCP connections or client services are started.
+
+`uv run --no-project python tests/async_validation.py` checks background validation through real CLI processes: sharing while a check is held open, exact-head evidence, owner-only notices, inherited-failure deduplication, atomic repair handoff, stale leases, worker restart, coalescing and bounded infrastructure retries. `--artifacts PATH` retains measured operation timings. See [the background validation contract](../docs/BACKGROUND-VALIDATION.md).
+
+`python tests/shared_commit.py` exercises the only current agent save/share action: `wip commit`. It uses real CLI subprocesses, Git and SQLite with four isolated scripted actors. It covers rejection of removed split actions, one-call integration, concurrent commits, required checks, public conflict resolution, private adoption reconciliation, duplicate/lost replies and crash recovery without recapturing newer files. Use `--binary PATH --artifacts PATH` to retain a sanitized summary.
+
+Reports and fixture campaigns below that describe checkpoint/publish/integrate concern lower-level storage primitives or historical revisions. They are not an alternative current agent workflow. The native ergonomics CI job runs the current single-commit suite.
+
 # Independent adversarial integration tests
 
 Run from the repository root after building:
@@ -87,3 +97,10 @@ Functional commit `1488774be3582fb0322de74f1071245ced08f114` passed [native CI 3
 Real-TLS artifact `12124098556` passed: four device identities, two owned server restarts, a retained offset of 262,144 bytes, eight upload attempts, one pre-send drop, one post-commit lost acknowledgment, one cross-device rejection, six certificate/ACL rejections and two integrated publications. Every stored public Git blob, including unreachable objects, was audited.
 
 At this functional checkpoint, main was still `112f8e7`; release publication requires passing CI on the final cleanup revision. This evidence is revision-specific and does not establish deployed multi-host WAN operation or completion of the full production specification. Preserve exact revisions and CI results; passing functional CI does not certify later edits. See [SCOPE.md](../docs/SCOPE.md) for remaining model-workflow, writer containment, full Windows adoption, real vault, multi-host WAN, GitHub/fresh-host recovery, physical power-loss and performance gates.
+
+Central audit contracts: `cargo test --locked audit::tests`, `uv run --no-project python tests/audit_collector.py`, and the transport security/daemon suites exercise integrity, lost acknowledgements, device binding, native history scoping and persisted retries. The native collector tests use synthetic histories and the real engine; they do not start model sessions.
+
+
+## Concurrent-agent feedback regressions
+
+`uv run --no-project python tests/agent_experience.py` exercises explicit save/share stages, the README baseline failure, prepared reviews, successful resolution reuse, binary/rename/deletion conflicts, combined-candidate checks, four concurrent advisory claims, leases/expiry, safe archive/reopen, generated-file visibility and crash recovery. Set `WIPSTASH_EXPERIENCE_ARTIFACTS` to save scenario metrics. `native_agent_experience.py --run-native --artifacts ABSOLUTE_NEW_PATH` is a separate opt-in test using installed Codex, Claude Code, OpenCode and Pi model accounts; its isolated fixture and normal CLI access never change global settings. See [the collaboration contracts](../docs/AGENT-COLLABORATION.md).

@@ -96,7 +96,7 @@ fn save_theme(light: bool) {
 #[component]
 pub fn Inspector(#[props(default)] demo_mode: bool) -> Element {
     let mut light = use_signal(initial_theme);
-    let mut kind = use_signal(|| "private".to_string());
+    let mut kind = use_signal(|| "shared".to_string());
     let mut workspace = use_signal(String::new);
     let mut query = use_signal(String::new);
     let mut file_query = use_signal(String::new);
@@ -171,7 +171,7 @@ pub fn Inspector(#[props(default)] demo_mode: bool) -> Element {
         .filter(|e| {
             format!(
                 "{} {} {} {} {}",
-                e.title, e.id, e.workspace, e.status, e.commit
+                e.title, e.id, e.workspace, status_label(&e.status), e.commit
             )
             .to_lowercase()
             .contains(&needle)
@@ -313,10 +313,10 @@ pub fn Inspector(#[props(default)] demo_mode: bool) -> Element {
                         }
                     }
                     if let Some(w) = active_workspace {
-                        div { class: "workspace-meta", span { "Generation {w.generation}" } code { title: "Adopted base: {w.base}", "{short(&w.base)}" } }
+                        div { class: "workspace-meta", span { "Generation {w.generation}" } code { title: "Merged base: {w.base}", "{short(&w.base)}" } }
                     } else { div { class: "workspace-meta", "{data.workspaces.len()} isolated workspaces" } }
                     nav { class: "history-nav", aria_label: "History visibility",
-                        button { class: if kind() == "private" { "nav-item active" } else { "nav-item" }, aria_pressed: kind() == "private", onclick: move |_| { kind.set("private".into()); selected.set(None); selected_path.set(None); history_offset.set(0); file_offset.set(0); }, Icon { name: "lock" } "Private checkpoints" }
+                        button { class: if kind() == "private" { "nav-item active" } else { "nav-item" }, aria_pressed: kind() == "private", onclick: move |_| { kind.set("private".into()); selected.set(None); selected_path.set(None); history_offset.set(0); file_offset.set(0); }, Icon { name: "lock" } "Recovery" }
                         button { class: if kind() == "shared" { "nav-item active" } else { "nav-item" }, aria_pressed: kind() == "shared", onclick: move |_| { kind.set("shared".into()); selected.set(None); selected_path.set(None); history_offset.set(0); file_offset.set(0); }, Icon { name: "branch" } "Shared history" }
                     }
                     div { class: "section-label", span { "WORKSPACES" } span { "{data.workspaces.len()}" } }
@@ -329,9 +329,9 @@ pub fn Inspector(#[props(default)] demo_mode: bool) -> Element {
                     }
                     div { class: "sidebar-bottom",
                         div { class: "section-label", "COLLABORATION" }
-                        div { class: "stat-row", span { "Proposals" } span { "{data.proposals.len()}" } }
+                        div { class: "stat-row", span { "Commits" } span { "{data.proposals.len()}" } }
                         div { class: "stat-row", span { "Conflict records" } span { class: if data.conflicts.is_empty() { "" } else { "warning-text" }, "{data.conflicts.len()}" } }
-                        p { class: "boundary-note", Icon { name: "lock" } "Checkpoints stay private until deliberately published." }
+                        p { class: "boundary-note", Icon { name: "lock" } "Commit submits work automatically. Get Latest, then Merge when ready." }
                     }
                 }
                 main { class: "main",
@@ -343,13 +343,13 @@ pub fn Inspector(#[props(default)] demo_mode: bool) -> Element {
                             }
                         }
                         div { class: "mobile-tabs",
-                            button { class: if kind() == "private" { "nav-item active" } else { "nav-item" }, aria_pressed: kind() == "private", onclick: move |_| { kind.set("private".into()); selected.set(None); selected_path.set(None); history_offset.set(0); file_offset.set(0); }, Icon { name: "lock" } "Private checkpoints" }
+                            button { class: if kind() == "private" { "nav-item active" } else { "nav-item" }, aria_pressed: kind() == "private", onclick: move |_| { kind.set("private".into()); selected.set(None); selected_path.set(None); history_offset.set(0); file_offset.set(0); }, Icon { name: "lock" } "Recovery" }
                             button { class: if kind() == "shared" { "nav-item active" } else { "nav-item" }, aria_pressed: kind() == "shared", onclick: move |_| { kind.set("shared".into()); selected.set(None); selected_path.set(None); history_offset.set(0); file_offset.set(0); }, Icon { name: "branch" } "Shared history" }
                         }
                     }
                     div { class: "page-heading",
-                        div { div { class: "eyebrow", "WORKSPACE ACTIVITY" } h1 { if kind() == "private" { "Private checkpoints" } else { "Shared history" } } p { if kind() == "private" { "Every saved step. Only shared when you choose." } else { "Published proposals and their integration into the shared head." } } }
-                        span { class: "scope-pill", Icon { name: if kind() == "private" { "lock" } else { "branch" } } if kind() == "private" { "Private scope" } else { "Shared scope" } }
+                        div { div { class: "eyebrow", "WORKSPACE ACTIVITY" } h1 { if kind() == "private" { "Recovery" } else { "Shared history" } } p { if kind() == "private" { "Local recovery records." } else { "Committed changes and their outcomes in shared history." } } }
+                        span { class: "scope-pill", Icon { name: if kind() == "private" { "lock" } else { "branch" } } if kind() == "private" { "Local scope" } else { "Shared scope" } }
                     }
                     if let Some(Err(error)) = &overview_result { div { class: "notice error", role: "alert", "{error}" } }
                     div { class: "inspection-grid",
@@ -360,7 +360,7 @@ pub fn Inspector(#[props(default)] demo_mode: bool) -> Element {
                                 match &history_result {
                                     None => rsx! { Loading { label: "Loading workspace history…" } },
                                     Some(Err(error)) => rsx! { ErrorState { message: error.clone(), onretry: move |_| history.restart() } },
-                                    Some(Ok(_)) if visible.is_empty() => rsx! { EmptyState { title: if query().is_empty() { "No history yet" } else { "No matching entries" }, detail: if query().is_empty() { "Saved checkpoints and published proposals will appear here." } else { "Try another title, workspace, status, or snapshot ID." } } },
+                                    Some(Ok(_)) if visible.is_empty() => rsx! { EmptyState { title: if query().is_empty() { "No history yet" } else { "No matching entries" }, detail: if query().is_empty() { "Commits and recovery records will appear here." } else { "Try another title, workspace, status, or commit ID." } } },
                                     _ => rsx! {
                                         for e in &visible {
                                             button { key: "{e.id}", class: if entry.as_ref().is_some_and(|s| s.id == e.id) { "history-entry selected" } else { "history-entry" }, aria_pressed: entry.as_ref().is_some_and(|s| s.id == e.id), onclick: { let id = e.id.clone(); move |_| { selected.set(Some(id.clone())); selected_path.set(None); file_offset.set(0); } },
@@ -377,9 +377,9 @@ pub fn Inspector(#[props(default)] demo_mode: bool) -> Element {
                                 button { disabled: next_history.is_none(), onclick: move |_| { if let Some(n) = next_history { history_offset.set(n); selected.set(None); selected_path.set(None); file_offset.set(0); } }, "Older →" }
                             }
                         }
-                        section { class: "detail-panel", aria_label: "Selected snapshot",
+                        section { class: "detail-panel", aria_label: "Selected commit",
                             if let Some(e) = &entry {
-                                div { class: "snapshot-heading", div { class: "snapshot-top", span { class: "eyebrow", "{e.kind}" } Badge { status: e.status.clone() } } h2 { "{e.title}" } div { class: "snapshot-meta", span { Icon { name: "workspace" } "{e.workspace}" } code { title: "Snapshot: {e.commit}", "{short(&e.commit)}" } span { "←" } code { title: "Comparison base: {e.base}", "{short(&e.base)}" } if let Some(g) = e.generation { span { "Generation {g}" } } } }
+                                div { class: "snapshot-heading", div { class: "snapshot-top", span { class: "eyebrow", "{kind_label(&e.kind)}" } Badge { status: e.status.clone() } } h2 { "{e.title}" } div { class: "snapshot-meta", span { Icon { name: "workspace" } "{e.workspace}" } code { title: "Commit: {e.commit}", "{short(&e.commit)}" } span { "←" } code { title: "Comparison base: {e.base}", "{short(&e.base)}" } if let Some(g) = e.generation { span { "Generation {g}" } } } }
                                 if state_class(&e.status) == "warning" { div { class: "notice warning", Icon { name: "alert" } "This entry needs attention. Inspect the changes here; resolve it through the workspace tools." } }
                                 div { class: "changes-toolbar", span { "Changes" } span { class: "count", "{changes_data.files.len()}" } span { class: "diff-stat add-text", "+{all_additions}" } span { class: "diff-stat remove-text", "−{all_deletions}" } span { class: "comparison", "{comparison_label(&changes_data.comparison)}" } }
                                 div { class: "changes-layout",
@@ -407,7 +407,7 @@ pub fn Inspector(#[props(default)] demo_mode: bool) -> Element {
                                         } else { EmptyState { title: "No file selected", detail: "Choose a changed file to inspect its diff." } }
                                     }
                                 }
-                            } else { EmptyState { title: "Your work, in perspective", detail: "Select a checkpoint or published entry to inspect what changed." } }
+                            } else { EmptyState { title: "Your work, in perspective", detail: "Select a commit to inspect what changed." } }
                         }
                     }
                     if !data.conflicts.is_empty() && kind() == "shared" {
@@ -423,7 +423,7 @@ pub fn Inspector(#[props(default)] demo_mode: bool) -> Element {
 
 #[component]
 fn Badge(status: String) -> Element {
-    rsx! { span { class: "badge {state_class(&status)}", "{status}" } }
+    rsx! { span { class: "badge {state_class(&status)}", "{status_label(&status)}" } }
 }
 #[component]
 fn Loading(label: String) -> Element {

@@ -4,7 +4,10 @@ use crate::git::Git;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use std::{collections::BTreeMap, path::Path};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::Path,
+};
 type ProposalMap = BTreeMap<String, String>;
 const PROPOSALS: &str = "refs/heads/wipstash/proposals/";
 type R<T> = Result<T, String>;
@@ -286,6 +289,33 @@ fn validate_metadata(value: &Value, proposals: &ProposalMap) -> R<()> {
     Ok(())
 }
 fn validate_public_events(g: &Git, manifest: &Value, proposals: &ProposalMap, root: &str) -> R<()> {
+    validate_public_events_cached(g, manifest, proposals, root, &mut PublicAncestry::default())
+}
+
+#[derive(Default)]
+struct PublicAncestry(BTreeMap<String, BTreeSet<String>>);
+impl PublicAncestry {
+    fn contains(&mut self, g: &Git, object: &str, root: &str) -> R<bool> {
+        if !oid(root) || !oid(object) {
+            return Err("backup_invalid_history_object".into());
+        }
+        if !self.0.contains_key(root) {
+            let history = String::from_utf8(g.run(&["rev-list", "--end-of-options", root], None)?)
+                .map_err(|e| e.to_string())?;
+            self.0
+                .insert(root.into(), history.lines().map(str::to_owned).collect());
+        }
+        Ok(self.0[root].contains(object))
+    }
+}
+
+fn validate_public_events_cached(
+    g: &Git,
+    manifest: &Value,
+    proposals: &ProposalMap,
+    root: &str,
+    ancestry: &mut PublicAncestry,
+) -> R<()> {
     let watermark = manifest["watermark"]
         .as_i64()
         .ok_or("backup_invalid_watermark")?;
@@ -329,7 +359,7 @@ fn validate_public_events(g: &Git, manifest: &Value, proposals: &ProposalMap, ro
                     .as_str()
                     .filter(|s| oid(s))
                     .ok_or("backup_invalid_integrated_head")?;
-                if !g.ancestor(head, root)? {
+                if !ancestry.contains(g, head, root)? {
                     return Err("backup_invalid_integrated_history".into());
                 }
                 if let Some(id) = id {
@@ -351,7 +381,7 @@ fn validate_public_events(g: &Git, manifest: &Value, proposals: &ProposalMap, ro
         for (id, record) in records {
             for key in ["base", "head"] {
                 if let Some(object) = record[key].as_str() {
-                    if !g.ancestor(object, root)? {
+                    if !ancestry.contains(g, object, root)? {
                         return Err("backup_queue_object_outside_public_history".into());
                     }
                 }
@@ -1493,7 +1523,28 @@ fn recognized(
 ) -> bool {
     actual == complete || actual == pending
 }
-fn flush_inner(state: &Path, db: &Connection, destination: &str) -> R<()> {
+fn outside_state_lock<T>(lock: Option<&std::fs::File>, action: impl FnOnce() -> R<T>) -> R<T> {
+    struct Relock<'a>(&'a std::fs::File);
+    impl Drop for Relock<'_> {
+        fn drop(&mut self) {
+            let _ = fs2::FileExt::lock_exclusive(self.0);
+        }
+    }
+    let Some(lock) = lock else { return action() };
+    fs2::FileExt::unlock(lock).map_err(|e| e.to_string())?;
+    let guard = Relock(lock);
+    let result = action();
+    fs2::FileExt::lock_exclusive(lock).map_err(|e| e.to_string())?;
+    std::mem::forget(guard);
+    result
+}
+
+fn flush_inner(
+    state: &Path,
+    db: &Connection,
+    destination: &str,
+    state_lock: Option<&std::fs::File>,
+) -> R<()> {
     let g = Git::open(&state.join("coordinator.git"));
     // First finish a durable pending pair, even if local events have advanced.
     loop {
@@ -1570,77 +1621,90 @@ fn flush_inner(state: &Path, db: &Connection, destination: &str) -> R<()> {
             .pending_metadata
             .as_ref()
             .ok_or("backup_corrupt_pending")?;
-        let actual = remote_refs(&g, destination)?;
-        if !recognized(&actual.0, &r.root, &r.pending_root)
-            || !recognized(&actual.1, &r.metadata, &r.pending_metadata)
-        {
-            return Err(
-                "backup_remote_diverged: refusing to overwrite unknown remote history".into(),
-            );
-        }
-        let proposals = manifest_proposals(&g, Some(metadata))?;
-        let previous_proposals = manifest_proposals(&g, r.metadata.as_ref())?;
-        let remote_proposal_map = remote_proposals(&g, destination)?;
-        for (id, object) in &remote_proposal_map {
-            if Some(object) != previous_proposals.get(id) && Some(object) != proposals.get(id) {
-                return Err("backup_remote_diverged: unknown proposal root".into());
-            }
-        }
-        for (id, object) in &previous_proposals {
-            if !proposals.contains_key(id) || !remote_proposal_map.contains_key(id) {
-                return Err("backup_remote_diverged: missing retained proposal root".into());
-            }
-            if proposals.get(id) != Some(object) {
+        let queue_snapshot = outside_state_lock(state_lock, || {
+            let actual = remote_refs(&g, destination)?;
+            if !recognized(&actual.0, &r.root, &r.pending_root)
+                || !recognized(&actual.1, &r.metadata, &r.pending_metadata)
+            {
                 return Err(
-                    "backup_proposal_changed: published proposal roots are immutable".into(),
+                    "backup_remote_diverged: refusing to overwrite unknown remote history".into(),
                 );
             }
-        }
-        validate_metadata_history(&g, metadata)?;
-        let a = format!("{pending}:{ROOT}");
-        let b = format!("{metadata}:{META}");
-        // Explicit reachable roots only. No --all, mirror, force, tags, local
-        // checkpoint refs, or private object directory is ever transferred.
-        let proposal_specs: Vec<String> = proposals
-            .iter()
-            .map(|(id, object)| format!("{object}:{PROPOSALS}{id}"))
-            .collect();
-        let receiver = if cfg!(windows) {
-            "--receive-pack=git -c core.hooksPath=NUL receive-pack"
-        } else {
-            "--receive-pack=git -c core.hooksPath=/dev/null receive-pack"
-        };
-        let mut specs = vec![a.as_str(), b.as_str()];
-        specs.extend(proposal_specs.iter().map(String::as_str));
-        g.run_local_repository(
-            &[
-                "-c",
-                "push.recurseSubmodules=no",
-                "push",
-                "--atomic",
-                "--no-follow-tags",
-                receiver,
-            ],
-            Path::new(destination),
-            &specs,
-        )?;
-        fault("backup_after_push");
-        if remote_refs(&g, destination)? != (Some(pending.clone()), Some(metadata.clone()))
-            || remote_proposals(&g, destination)? != proposals
-        {
-            return Err(
-                "backup_verification_failed: remote roots do not match pending pair".into(),
-            );
-        }
-        let bytes = g.run(&["show", &format!("{metadata}:metadata.json")], None)?;
-        let manifest: Value = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
-        let queue_snapshot=json!({"proposals":proposals,"metadata":manifest.get("proposal_metadata").cloned().unwrap_or(json!({})),"recovery":manifest["recovery"]}).to_string();
+            let proposals = manifest_proposals(&g, Some(metadata))?;
+            let previous_proposals = manifest_proposals(&g, r.metadata.as_ref())?;
+            let remote_proposal_map = remote_proposals(&g, destination)?;
+            for (id, object) in &remote_proposal_map {
+                if Some(object) != previous_proposals.get(id) && Some(object) != proposals.get(id) {
+                    return Err("backup_remote_diverged: unknown proposal root".into());
+                }
+            }
+            for (id, object) in &previous_proposals {
+                if !proposals.contains_key(id) || !remote_proposal_map.contains_key(id) {
+                    return Err("backup_remote_diverged: missing retained proposal root".into());
+                }
+                if proposals.get(id) != Some(object) {
+                    return Err(
+                        "backup_proposal_changed: published proposal roots are immutable".into(),
+                    );
+                }
+            }
+            validate_metadata_history(&g, metadata)?;
+            let a = format!("{pending}:{ROOT}");
+            let b = format!("{metadata}:{META}");
+            // Explicit reachable roots only. No --all, mirror, force, tags, local
+            // checkpoint refs, or private object directory is ever transferred.
+            let proposal_specs: Vec<String> = proposals
+                .iter()
+                .map(|(id, object)| format!("{object}:{PROPOSALS}{id}"))
+                .collect();
+            let receiver = if cfg!(windows) {
+                "--receive-pack=git -c core.hooksPath=NUL receive-pack"
+            } else {
+                "--receive-pack=git -c core.hooksPath=/dev/null receive-pack"
+            };
+            let mut specs = vec![a.as_str(), b.as_str()];
+            specs.extend(proposal_specs.iter().map(String::as_str));
+            g.run_local_repository(
+                &[
+                    "-c",
+                    "push.recurseSubmodules=no",
+                    "push",
+                    "--atomic",
+                    "--no-follow-tags",
+                    receiver,
+                ],
+                Path::new(destination),
+                &specs,
+            )?;
+            fault("backup_after_push");
+            if remote_refs(&g, destination)? != (Some(pending.clone()), Some(metadata.clone()))
+                || remote_proposals(&g, destination)? != proposals
+            {
+                return Err(
+                    "backup_verification_failed: remote roots do not match pending pair".into(),
+                );
+            }
+            let bytes = g.run(&["show", &format!("{metadata}:metadata.json")], None)?;
+            let manifest: Value = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+            let queue_snapshot=json!({"proposals":proposals,"metadata":manifest.get("proposal_metadata").cloned().unwrap_or(json!({})),"recovery":manifest["recovery"]}).to_string();
+            Ok(queue_snapshot)
+        })?;
         sql(db.execute("UPDATE backup_state SET watermark=pending_watermark,root=pending_root,metadata=pending_metadata,pending_watermark=NULL,pending_root=NULL,pending_metadata=NULL,error=NULL,queue_snapshot=?1 WHERE id=1",[queue_snapshot]))?;
-        // Loop once more to catch up events that predated this flush but followed
-        // an interrupted previous flush. The caller holds the coordinator lock.
+        // A concurrent writer may already have advanced the source. Report lag
+        // and let the next worker tick prepare another pair instead of chasing it.
+        return Ok(());
     }
 }
+#[cfg(test)]
 pub fn flush(state: &Path, db: &Connection, destination: &Path) -> R<Value> {
+    flush_with_lock(state, db, destination, None)
+}
+pub(crate) fn flush_with_lock(
+    state: &Path,
+    db: &Connection,
+    destination: &Path,
+    state_lock: Option<&std::fs::File>,
+) -> R<Value> {
     schema(db)?;
     // Canonicalization makes a URL, scp-style path, or nonexistent remote fail
     // before any Git transport. This function never creates a destination.
@@ -1670,7 +1734,7 @@ pub fn flush(state: &Path, db: &Connection, destination: &Path) -> R<Value> {
             [destination],
         ))?;
     }
-    match flush_inner(state, db, destination) {
+    match flush_inner(state, db, destination, state_lock) {
         Ok(()) => status(db),
         Err(e) => block(db, e),
     }
@@ -1740,6 +1804,7 @@ pub fn verify_restore(destination: &Path) -> R<Value> {
 }
 
 fn validate_metadata_history(g: &Git, meta: &str) -> R<()> {
+    let mut ancestry = PublicAncestry::default();
     // Metadata ancestors are transported too. Every historical tree must be a
     // public manifest, never a side channel for private files or opaque output.
     let lineage =
@@ -1775,7 +1840,8 @@ fn validate_metadata_history(g: &Git, meta: &str) -> R<()> {
         validate_metadata(&m, &historical)?;
         for object in validate_recovery_links(&m, &historical)? {
             if !historical.values().any(|o| o == &object)
-                && !g.ancestor(
+                && !ancestry.contains(
+                    g,
                     &object,
                     m["integration"]
                         .as_str()
@@ -1785,13 +1851,14 @@ fn validate_metadata_history(g: &Git, meta: &str) -> R<()> {
                 return Err("backup_nonpublic_recovery_object".into());
             }
         }
-        validate_public_events(
+        validate_public_events_cached(
             g,
             &m,
             &historical,
             m["integration"]
                 .as_str()
                 .ok_or("backup_invalid_metadata_lineage")?,
+            &mut ancestry,
         )?;
     }
 

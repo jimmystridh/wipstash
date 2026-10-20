@@ -155,6 +155,10 @@ fn command() -> Command {
             "core.fsync=all",
             "-c",
             "core.fsyncMethod=fsync",
+            "-c",
+            "gc.auto=0",
+            "-c",
+            "maintenance.auto=false",
         ]);
     c
 }
@@ -251,6 +255,7 @@ fn validate_path(path: &str) -> Result<()> {
                 .any(|c| c.is_control() || "\\:*?\"<>|".contains(c))
             || device
             || component.eq_ignore_ascii_case(".git")
+            || component.eq_ignore_ascii_case(".wip")
         {
             return Err(format!("unsupported_tree: non-portable path {path:?}"));
         }
@@ -264,6 +269,7 @@ fn validate_path(path: &str) -> Result<()> {
 fn excluded(name: &str) -> bool {
     let n = name.to_ascii_lowercase();
     n == ".git"
+        || n == ".wip"
         || n == ".env"
         || n.starts_with(".env.")
         || matches!(
@@ -424,6 +430,16 @@ impl Git {
     pub fn run(&self, args: &[&str], input: Option<&[u8]>) -> Result<Vec<u8>> {
         checked(execute(self.cmd(args)?, input)?)
     }
+    pub(crate) fn run_in(
+        &self,
+        directory: &Path,
+        args: &[&str],
+        input: Option<&[u8]>,
+    ) -> Result<Vec<u8>> {
+        let mut command = self.cmd(args)?;
+        command.current_dir(directory);
+        checked(execute(command, input)?)
+    }
     /// Local-only Git transport boundary. Keep canonical filesystem identities
     /// separate from Git's process representation and never infer a remote URL.
     pub fn run_local_repository(
@@ -529,6 +545,9 @@ impl Git {
             return Err("reference must start with refs/".into());
         }
         self.run(&["check-ref-format", refname], None)?;
+        if self.direct_ref(refname)?.is_some() {
+            return Err("reference_conflict: immutable pin already exists".into());
+        }
         self.run(
             &[
                 "update-ref",
@@ -613,6 +632,10 @@ impl Git {
             )?)?;
             entries.extend_from_slice(format!("{mode} {blob}\t{name}\0").as_bytes());
         }
+        self.index_tree(&entries)
+    }
+
+    fn index_tree(&self, entries: &[u8]) -> Result<String> {
         let index = self.repo.join(format!(
             "wipstash-index-{}-{}",
             std::process::id(),
@@ -634,8 +657,100 @@ impl Git {
             checked(execute(c, input)?)
         };
         indexed(&["read-tree", "--empty"], None)?;
-        indexed(&["update-index", "-z", "--index-info"], Some(&entries))?;
+        indexed(&["update-index", "-z", "--index-info"], Some(entries))?;
         oid(indexed(&["write-tree"], None)?)
+    }
+
+    pub(crate) fn stage(&self, root: &Path, baseline: &str, paths: &[String]) -> Result<String> {
+        real_directory(root)?;
+        let listing = self.run(&["ls-tree", "-r", "-z", baseline], None)?;
+        let mut entries = std::collections::BTreeMap::new();
+        for item in listing.split(|b| *b == 0).filter(|v| !v.is_empty()) {
+            let text = std::str::from_utf8(item).map_err(err)?;
+            let (header, name) = text.split_once('\t').ok_or("invalid_index_tree")?;
+            allowed_path(name)?;
+            let fields: Vec<_> = header.split(' ').collect();
+            if fields.len() != 3 || fields[1] != "blob" {
+                return Err("invalid_index_tree".into());
+            }
+            entries.insert(
+                name.to_owned(),
+                (fields[0].to_owned(), fields[2].to_owned()),
+            );
+        }
+        for name in paths {
+            if name == "." {
+                return self.capture(root);
+            }
+            allowed_path(name)?;
+            if name.split('/').any(excluded) {
+                return Err(format!("path_ignored: {name}"));
+            }
+            let path = root.join(name);
+            for parent in path.parent().ok_or("invalid_stage_path")?.ancestors() {
+                if fs::symlink_metadata(parent).is_ok() {
+                    real_directory(parent)?;
+                    break;
+                }
+            }
+            let prefix = format!("{name}/");
+            let matched = entries.keys().any(|p| p == name || p.starts_with(&prefix));
+            let metadata = match fs::symlink_metadata(&path) {
+                Ok(m) => Some(m),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+                Err(e) => return Err(err(e)),
+            };
+            if metadata.is_none() && !matched {
+                return Err(format!("pathspec_not_found: {name}"));
+            }
+            let mut files = Vec::new();
+            if let Some(metadata) = metadata {
+                if metadata.file_type().is_symlink() {
+                    return Err(format!("unsupported_tree: symlink {name}"));
+                }
+                if self.is_ignored(root, &path, metadata.is_dir())? && !matched {
+                    return Err(format!("path_ignored: {name}"));
+                }
+                if metadata.is_dir() {
+                    self.walk(root, &path, name, &mut files, &mut HashMap::new(), &mut 0)?;
+                } else if metadata.is_file() {
+                    #[cfg(unix)]
+                    let executable = {
+                        use std::os::unix::fs::PermissionsExt;
+                        metadata.permissions().mode() & 0o111 != 0
+                    };
+                    #[cfg(not(unix))]
+                    let executable = false;
+                    let bytes = bounded_output(
+                        fs::File::open(&path).map_err(err)?,
+                        MAX_BLOB_BYTES as usize,
+                    )?;
+                    if bytes.len() as u64 != metadata.len() {
+                        return Err("files_changed_during_add".into());
+                    }
+                    files.push((
+                        name.clone(),
+                        if executable { "100755" } else { "100644" },
+                        bytes,
+                    ));
+                } else {
+                    return Err("unsupported_tree: special file".into());
+                }
+            }
+            entries.retain(|p, _| p != name && !p.starts_with(&prefix));
+            for (path, mode, bytes) in files {
+                let blob = oid(self.run(
+                    &["hash-object", "-w", "--stdin", "--no-filters"],
+                    Some(&bytes),
+                )?)?;
+                entries.insert(path, (mode.to_owned(), blob));
+            }
+        }
+        let mut bytes = Vec::new();
+        for (name, (mode, blob)) in entries {
+            bytes.extend_from_slice(format!("{mode} {blob}\t{name}\0").as_bytes());
+        }
+        self.index_tree(&bytes)
     }
     fn walk(
         &self,
@@ -1004,6 +1119,10 @@ mod tests {
             .unwrap();
         assert!(git.direct_ref(dangling).is_err());
         assert!(git.create_ref(dangling, &second).is_err());
+        assert_eq!(
+            git.run(&["symbolic-ref", dangling], None).unwrap(),
+            b"refs/wipstash/absent\n"
+        );
     }
 
     #[test]
@@ -1071,7 +1190,27 @@ mod tests {
         fs::create_dir(&src).unwrap();
         fs::write(src.join("A"), b"a").unwrap();
         fs::write(src.join("a"), b"b").unwrap();
-        assert!(g.capture(&src).unwrap_err().contains("collision"));
+        if fs::read_dir(&src).unwrap().count() == 2 {
+            assert!(g.capture(&src).unwrap_err().contains("collision"));
+        }
+        let blob = oid(g
+            .run(&["hash-object", "-w", "--stdin"], Some(b"a"))
+            .unwrap())
+        .unwrap();
+        let tree = oid(g
+            .run(
+                &["mktree"],
+                Some(format!("100644 blob {blob}\tA\n100644 blob {blob}\ta\n").as_bytes()),
+            )
+            .unwrap())
+        .unwrap();
+        let dst = t.0.join("dst");
+        fs::create_dir(&dst).unwrap();
+        assert!(g
+            .materialize(&tree, &dst)
+            .unwrap_err()
+            .contains("collision"));
+        assert_eq!(fs::read_dir(&dst).unwrap().count(), 0);
         for name in ["../x", "a/../x", "a\\b", "CON", "x.", "/abs", "a//b"] {
             assert!(validate_path(name).is_err(), "{name}");
         }

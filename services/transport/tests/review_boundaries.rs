@@ -149,6 +149,7 @@ fn workstation() -> wipstash_transport::Workstation {
             tls: std::sync::Arc::new(tls),
             server_name: "localhost".into(),
             authority_fingerprint: "0".repeat(64),
+            cloud: None,
         },
         address: c.listen,
         engine: c.engine,
@@ -224,6 +225,7 @@ async fn canceled_request_closes_in_memory_tls_driver() {
         ),
         server_name: "localhost".into(),
         authority_fingerprint: fingerprint(cert.der()),
+        cloud: None,
     };
     let (a, b) = tokio::io::duplex(4096);
     let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();

@@ -1,5 +1,7 @@
 # Scope, evidence and release gates
 
+> Historical specification assessment. Interface and deployment descriptions below refer to earlier revisions. The supported interface is now the standalone CLI in [CLIENTS.md](CLIENTS.md); current demo hosting is documented in [CLOUD-RUN.md](CLOUD-RUN.md). Retained CI evidence applies only to its recorded revision. Source-control MCP and workstation services are removed.
+
 ## What this release is
 
 This is a Rust local-first vertical slice of the **Bot workspace collaboration specification v1.1 (17 October 2026)** and accompanying **Wipstash implementation plan (17 October 2026)**. Those documents define the target, not features automatically provided by this repository. Their target is a native macOS/Windows/Linux collaboration service for real Codex and Claude Code clients across LAN/WAN, with authenticated authority, reliable writer coordination, confined repair and asynchronous GitHub recovery.

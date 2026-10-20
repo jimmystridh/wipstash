@@ -1,14 +1,14 @@
 # Wipstash
 
-### Save the mess. Share the change. Keep working.
+### Commit the change. Keep working.
 
-Wipstash gives coding agents their own workspaces and private checkpoints, then brings their deliberately published changes together. Each agent chooses when to adopt the shared result.
+Wipstash gives each coding agent its own working directory. One commit saves the current source, submits it, and attempts integration into the shared project. Each agent chooses when to merge shared changes.
 
-Four bots can work on one project without sharing one working directory, publishing every half-finished thought, or having another bot's changes land under their cursor.
+Several agents can edit one project concurrently in separate directories. Uncommitted edits remain local, and shared changes arrive in a directory only when its owner merges them.
 
-**Private WIP → deliberate publish → autonomous integration → deliberate adopt.**
+**Edit → commit to shared. Merge shared changes when ready.**
 
-Wipstash is a Rust prototype with a working local collaboration loop, a JSON CLI, stdio MCP, and explicit source exchange between independent client and authority stores. Start with the disposable demo below. The operating profile remains cooperative; selected native Linux/macOS/Windows and real loopback TLS contracts have passed at the revisions recorded in the scope document. Broader platform, deployed network and remote backup acceptance remain open. [Exact scope and release gates →](docs/SCOPE.md)
+Wipstash is a Rust prototype with a working local collaboration loop, a standalone `wip` CLI, and explicit source exchange between independent client and authority stores. Start with the disposable demo below. The operating profile remains cooperative; selected native Linux/macOS/Windows and real loopback TLS contracts have passed at the revisions recorded in the scope document. Broader platform, deployed network and remote backup acceptance remain open. [Exact scope and release gates →](docs/SCOPE.md)
 
 ## Inspect the work
 
@@ -16,12 +16,12 @@ Wipstash is a Rust prototype with a working local collaboration loop, a JSON CLI
 
 *Actual Dioxus browser capture; synthetic demo data.*
 
-**Wipstash Inspector** is a compact Dioxus web UI for understanding what happened without changing it. Browse private checkpoints, published proposals, quarantined conflicts and shared integrations; select a file to inspect a unified or side-by-side diff.
+**Wipstash Inspector** is a compact Dioxus web UI for understanding what happened without changing it. Browse shared commit outcomes, blocked conflicts and local recovery commits; select a file to inspect a unified or side-by-side diff.
 
 - Real journal order and explicit comparison bases, rather than invented timestamps
 - Workspace and loaded-history filters, keyboard navigation, dark/light themes and a responsive layout
 - Lazy, bounded diffs with line numbers and clear binary/truncation notices
-- A separate read-only service: browsing never checkpoints, publishes, integrates, adopts or recovers your state
+- A separate read-only service: browsing never recovery records, publishes, integrates, merges or recovers your state
 
 Build and launch it against an **existing** Wipstash state directory:
 
@@ -34,151 +34,102 @@ cargo run --locked --manifest-path services/inspector/Cargo.toml -- \
   --assets apps/inspector/dist
 ```
 
-Open **http://127.0.0.1:47831**. This is a local operator tool that can show private checkpoint source. Keep it on your own trusted machine; do not port-forward it or expose it through a remote proxy. It has no remote login or mutation routes.
+Open **http://127.0.0.1:47831**. This is a local operator tool that can show private recovery record source. Keep it on your own trusted machine; do not port-forward it or expose it through a remote proxy. It has no remote login or mutation routes.
 
 [Interface and shortcuts](apps/inspector/README.md) · [Read-only API and security boundary](services/inspector/README.md) · [Adversarial inspection tests](tests/INSPECTOR-SECURITY-REVIEW.md)
 
-## The four decisions that matter
+Cloud Run can also host the central authority with durable Cloud Storage checkpoints and signed HTTPS clients. Existing native hosting remains available. See [Cloud Run setup and operation](docs/CLOUD-RUN.md).
 
-| Step | What happens | Who decides? |
-| --- | --- | --- |
-| **Checkpoint** | Save a private snapshot, including broken or unfinished source | The workspace owner |
-| **Publish** | Offer exactly one selected checkpoint with an intent | The workspace owner |
-| **Integrate** | Merge queued proposals into the shared head; quarantine unresolved conflicts | The worker, under configured policy |
-| **Adopt** | Reconcile a chosen shared head with the workspace's current WIP | The workspace owner |
+## The workflow
 
-```text
-Bot A  private workspace → checkpoints ── publish ──┐
-Bot B  private workspace → checkpoints ── publish ──┤
-Bot C  private workspace → checkpoints ── publish ──┼→ integration → shared head
-Bot D  private workspace → checkpoints ── publish ──┘                    │
-                                                                        │
-       each workspace ←──────── deliberate adopt ────────────────────────┘
-```
+| Action | Result |
+| --- | --- |
+| **Edit** | Use native file tools in your own isolated working directory. |
+| **Add** | Stage exact selected file contents. |
+| **Commit** | Save and share the staged tree in one command. |
+| **Merge** | Deliberately reconcile shared changes with your working files. |
 
-Fetching an update leaves live files alone. Publishing a checkpoint does not publish its private checkpoint ancestry. An unresolved proposal can wait while unrelated work moves forward.
+`wip add` selects exact contents and `wip commit -m MESSAGE` saves and shares them. Check `shared: true` before reporting sharing. Conflicts return a prepared review; offline or interrupted work remains durable for the next connected command or `wip sync`. There is no required client daemon, source-control MCP registration or agent launcher.
 
-Checks are **off by default**. You can save and publish code that does not compile. Opt into checks or repair workers when your project needs them; a clean merge alone says nothing about whether the code works. Configured repair defaults to confined execution and stays quarantined when the confinement backend is unavailable.
+Successive commits track your last shared commit, so you can commit often without merging between commits. A commit does not rewrite any agent's working directory. Use Get Latest to inspect incoming paths and Commit messages, then Merge when ready. Recovery commits are implementation records, not another user workflow.
+
+Checks are **off by default**. Commit shares conflict-free work immediately and the server runs configured checks asynchronously on immutable shared code, outside the repo lock. A shared commit can have pending or failed validation. Failures are offered to the next active workspace for 30 seconds; acknowledgement holds one exclusive repair lease. The originating commit remains separate evidence. Task/repair comments support targeted tips. other agents can inspect repo health and repair history. No configured checks means `unchecked`. Deployment eligibility requires passing checks for the exact version under the current policy. See [background validation](docs/BACKGROUND-VALIDATION.md).
+
+Read [concurrent-agent status, conflict review, task claims and workspace lifecycle](docs/AGENT-COLLABORATION.md) and [dated validation results](docs/AGENT-FEEDBACK-VALIDATION.md). Server-confirmed advisory claims expose overlap before editing; all conflict types have prepared base/local/shared/result review directories.
 
 ## Try it
 
-Requirements: Rust/Cargo, Git with `merge-tree --write-tree`, and Python 3. The repository pins its tested Rust toolchain in [rust-toolchain.toml](rust-toolchain.toml); it does not declare an MSRV. First build may download dependencies.
+Requirements: Rust/Cargo and Git with `merge-tree --write-tree`. The toolchain is pinned in [rust-toolchain.toml](rust-toolchain.toml). Python is only needed for optional native-history collection and test harnesses.
 
 ```sh
-# From a checkout of this repository:
-cargo build --locked
+cargo build --release --locked --bin wip
+# Install target/release/wip on PATH, then:
+wip init my-project
+wip clone ./my-project ./alice
+wip clone ./my-project ./bob
+cd alice
+# Create or edit apa.js.
+wip add apa.js
+wip diff --staged
+wip commit -m 'tjenis tjenis'
 ```
 
-Run this from the repository root. It creates disposable synthetic source, state, and two isolated workspaces. No credentials or remote service are needed.
+Start any coding agent normally inside its own clone. For an existing remote, import the provisioned private device profile with `wip remote add NAME --config FILE`, then use `wip clone NAME DIRECTORY`. See [CLI setup, commands and migration](docs/CLIENTS.md).
 
-```sh
-python3 - <<'PY'
-import json, pathlib, subprocess, tempfile
+`wip get-latest` fetches incoming work without editing files; `wip merge` deliberately brings it into your clone. Checks run on the server asynchronously. `wip status`, `wip diff`, `wip log` and `wip check` expose source and validation state. All commands support `--json` and predictable exit statuses.
 
-binary = str(pathlib.Path('target/debug/wipstash').resolve())
-root = pathlib.Path(tempfile.mkdtemp(prefix='wipstash-demo-'))
-source = root / 'source'
-source.mkdir()
-(source / 'hello.txt').write_text('initial\n')
-
-def request(**body):
-    result = subprocess.run(
-        [binary, '--state', str(root / 'state'), json.dumps(body)],
-        check=True, capture_output=True, text=True)
-    reply = json.loads(result.stdout)
-    assert reply['ok'], reply
-    print(body['op'], json.dumps(reply))
-    return reply
-
-request(op='init', source=str(source))
-for name in ('alice', 'bob'):
-    request(op='open', workspace=name, path=str(root / name),
-            operation_id='open-' + name)
-
-(root / 'alice' / 'hello.txt').write_text('published by alice\n')
-request(op='checkpoint', workspace='alice', expected_generation=0,
-        operation_id='save-alice')
-request(op='publish', workspace='alice', checkpoint='save-alice',
-        intent='Update greeting', operation_id='publish-alice')
-request(op='integrate')
-request(op='proposal_status', proposal='publish-alice')
-request(op='updates', workspace='bob')
-assert (root / 'bob' / 'hello.txt').read_text() == 'initial\n'
-
-request(op='adopt', workspace='bob', target='latest',
-        expected_generation=0, operation_id='adopt-bob')
-assert (root / 'bob' / 'hello.txt').read_text() == 'published by alice\n'
-print('PASS: Bob changed only after adoption. Demo directory:', root)
-PY
-```
-
-The important moment is the first assertion: Alice's change is integrated, Bob knows about it, and Bob's files still contain `initial`. Only `adopt` changes them.
-
-For background integration, replace manual `integrate` calls with a worker in another terminal, using the demo's printed directory:
-
-```sh
-./target/debug/wipstash --state /absolute/demo/directory/state worker
-```
-
-Stop it with Ctrl-C. The local worker processes queued proposals and retries configured local backup; it does not automatically move source-exchange artifacts between machines.
-
-Before using your own source: `init` makes the imported tree the initial public head. Review it first. Keep state, source, and workspace directories separate. Stop external writers before checkpoint/adoption. Filename exclusions are not a secret scanner. [Operational contract →](docs/OPERATIONS.md)
+Init makes the eligible imported tree the initial shared head; review source first. Credentials and engine state stay outside working directories. Protected `.wip` metadata is excluded from source. Native writers remain cooperative. [Operational contract →](docs/OPERATIONS.md)
 
 ## Four bots, one project
 
 Imagine one bot changing an API, one updating its caller, one writing tests, and one fixing docs:
 
-1. Each gets an ordinary directory and checkpoints its own WIP. Their private histories can be as messy as they need.
-2. The API bot publishes one chosen snapshot. Later edits stay private until separately published.
-3. The worker integrates it. If the caller bot's proposal conflicts, the caller gets an actionable resolution task; the docs change can still land. The caller opens a separate public-snapshot checkout, resolves and checkpoints the selected change, then explicitly submits a replacement proposal. Its original private WIP stays untouched.
-4. The test bot checks for updates and adopts when ready. If adoption conflicts with its private work, the live workspace stays unchanged and an explicit resolution path is available.
-5. Everyone can inspect proposal status and operation records instead of guessing what a timeout meant. Resolution retries are bounded; compatible shared-tip advances preserve the explicit resolution through a fresh merge, renewed conflicts require fresh review, and configured checks run again before promotion.
+1. Each edits its own ordinary directory. Even two sessions of the same client need separate workspace IDs and paths.
+2. The API agent commits a coherent increment. One call captures, submits and attempts integration; later edits remain local.
+3. If the caller agent's commit conflicts, it opens the returned isolated resolution workspace, reviews and fixes it, then commits that resolution with the captured head and complete conflict-path attestation. Original WIP stays intact. Unrelated changes can still land.
+4. The test agent checks shared changes and merges when ready. An merge conflict leaves its live files unchanged and offers an explicit local reconciliation.
+5. Everyone verifies the returned shared outcome and uses operation receipts after uncertain responses. No separate publication or integration request is needed.
 
-Keep publications intentional and scoped to coherent tasks; this is agent guidance, not an enforced size rule. Conflicts are returned to the submitting agent through status/updates and MCP; Wipstash does not start a background model session to fix them. [Conflict handback and safe Codex/Claude workflow →](docs/CONFLICTS.md)
+[Install the agent skill](skills/wipstash-source-control/SKILL.md) for the exact commit, conflict and recovery procedure. [Conflict handback](docs/CONFLICTS.md) documents the bounded resolution contract.
 
-The test harness exercises this with **four deterministic scripted actors**. A separate [six-arm native model-agent pilot](docs/REAL-AGENT-VALIDATION.md) at `c489e00` drained 45 integrated snapshots and 39 superseded predecessors with private WIP preserved. It exposed stale-head coordination costs; it did not establish saturation or an optimal publication size. Claude Code stdio initialization and tool discovery have been verified; actual model-driven Codex/Claude workflows and arbitrary native-writer containment remain release gates.
+The test harness exercises this with **four deterministic scripted actors**. A separate [six-arm native model-agent pilot](docs/REAL-AGENT-VALIDATION.md) at `c489e00` drained 45 integrated commits and 39 superseded predecessors with private WIP preserved. It exposed stale-head coordination costs; it did not establish saturation or an optimal publication size. The current feedback acceptance exercise also runs installed Codex, Claude Code, OpenCode and Pi against an isolated local fixture, verifying server-checked sharing and unchanged peer files. Arbitrary native-writer containment and deployed multi-host acceptance remain release gates. See [the reproducible procedure](docs/AGENT-COLLABORATION.md).
 
 ## Why Git underneath?
 
 Git already provides content-addressed objects, immutable commits, trees, ancestry, and three-way merge. Wipstash uses those building blocks while exposing operations that match how agents work.
 
-- **Private object stores** retain workspace checkpoints.
-- **Public-base ancestry** exports the selected snapshot without linking its private checkpoint chain.
+- **Private object stores** retain workspace recovery records.
+- **Public-base ancestry** exports the selected commit without linking its private recovery record chain.
 - **A shared integration head** records accepted combinations.
 - **SQLite journals and generations** track operation identity, state transitions, and recovery.
 
-Git remains the storage and merge foundation. Wipstash adds the boundary between saving work, sharing work, and accepting somebody else's work. It does not require a clean build to save your place.
+Git remains the storage and merge foundation. Wipstash combines saving and sharing in one commit while keeping merge deliberate. Uncommitted files remain private; recovery history is retained internally.
 
-## CLI, MCP, and independent clients
+## CLI and independent clients
 
-**CLI:** one JSON request, one JSON response. Reuse an operation ID only for the identical request; query status after uncertain outcomes.
+`wip` provides repository discovery, exact staging, sharing, incoming changes, conflicts, task claims, comments, repairs, audit, workspace lifecycle and recovery. `wip request` exposes additional public operations; `wip admin` retains trusted policy, backup and recovery access. Exact mutation identities are retained before execution. `wip operation list`, `show` and `retry` support interrupted commands without recapturing newer source.
 
-```sh
-./target/debug/wipstash --state /absolute/path/to/state '{"op":"status","workspace":"alice"}'
-./target/debug/wipstash --state /absolute/path/to/state mcp
-```
+`wip remote setup`, `device invite`, `join`, `serve`, `status` and `doctor` retain guided native mTLS enrollment and operator hosting. They run explicitly; clients need no installed service. Private keys and one-time invitations retain their reviewed protection rules. [Enrollment and recovery](docs/PAIRING.md).
 
-**MCP:** typed workflow tools plus a generic request tool over stdio. [Client setup](docs/CLIENTS.md) includes [Codex](examples/clients/codex.toml) and [Claude Code](examples/clients/claude.mcp.json) examples. Registration does not intercept native edits or enforce a writer freeze.
+Source-control MCP and the agent launchers are retired. The server still runs integration, validation and configured backup work. Each agent edits its own clone using ordinary native tools and calls the same CLI. [Complete agent workflow](skills/wipstash-source-control/SKILL.md).
 
-**Guided remote setup (experimental):** `wipstash remote` delegates to a fixed companion `wipstash-transport` binary installed beside it. Use `setup`, `device invite`, and `join` to manage private keys, one-time invitations, certificates and configuration without hand-editing JSON. Enrollment has its own server-authenticated TLS endpoint; synchronization still requires mTLS. Local `device list`, `revoke`, `rotate`, `cancel-invite` and `doctor` commands expose recovery and lifecycle operations. Pairing never publishes or adopts source. [Setup, trusted invitation delivery, rotation and recovery →](docs/PAIRING.md)
+**Source exchange:** independent client stores export deliberate public commits; an authority imports and integrates them; clients import public heads and explicitly merge. The core currently exchanges bounded filesystem artifacts with separately trusted provenance. [Protocol and commands →](docs/SOURCE-SYNC.md)
 
-**Source exchange:** independent client stores export deliberate public proposals; an authority imports and integrates them; clients import public heads and explicitly adopt. The core currently exchanges bounded filesystem artifacts with separately trusted provenance. [Protocol and commands →](docs/SOURCE-SYNC.md)
-
-**Receipts:** the authority can return a proposal observation with its disposition, evidence category, identity, and revision. Clients distinguish local transport state from the latest received authority observation. A receipt does not install a head, adopt source, or prove the authority is reachable right now. Raw worker output and private checkpoint histories are excluded from receipt payloads.
+**Receipts:** the authority can return a commit observation with its disposition, evidence category, identity, and revision. Clients distinguish local transport state from the latest received authority observation. A receipt does not install a head, merge source, or prove the authority is reachable right now. Raw worker output and private recovery record histories are excluded from receipt payloads.
 
 ## Where it stands
 
 | Area | Current boundary |
 | --- | --- |
-| Private checkpoints, publication, integration, adoption | Implemented and exercised with real CLI/Git/SQLite on Linux; cooperative writers required |
-| Independent stores and receipts | Implemented explicit artifact exchange, ordered replay, object verification, and targeted proposal observations |
-| CLI and stdio MCP | Implemented; Claude Code 2.1.302 stdio handshake/tool discovery verified, Codex configuration parsing verified; standalone Codex/Claude model-driven workflows remain unverified; separate native-agent CLI pilot documented |
-| Conflict handback | Explicit isolated resolution checkout, checkpoint and replacement submission; bounded attempts and stale-tip validation. See [workflow and evidence boundary](docs/CONFLICTS.md) |
-| Checks and repair | Empty by default; durable repair budgets and confined-or-unavailable repair dispatch. Linux sandbox execution is not verified in this environment; no bundled model worker |
-| Public recovery | Version 2 preserves public intent, ownership, queue order, operation identity and replay metadata; restored execution stays fenced until explicit operator activation. Private WIP is excluded |
+| One-call shared commits and deliberate merge | Implemented and exercised with real CLI/Git/SQLite on Linux; cooperative writers required |
+| Independent stores and receipts | Implemented explicit artifact exchange, ordered replay, object verification, and targeted commit observations |
+| Standalone CLI | Exact staging, direct authenticated delivery, coordination, conflict review and recovery; source-control MCP and required client workers retired. Platform and deployment evidence is recorded separately |
+| Conflict handback | Explicit isolated resolution checkout and one-call resolution commit; bounded attempts and stale-tip validation. See [workflow and evidence boundary](docs/CONFLICTS.md) |
+| Checks and repair | Background checks on exact shared versions; one leased agent repair owner, durable notices and server timing records. No automatic model invocation |
+| Public recovery | Version 2 preserves public commit message, ownership, queue order, operation identity and replay metadata; restored execution stays fenced until explicit operator activation. Private WIP is excluded |
 | Authenticated transport | mTLS service/client implementation, certificate ACLs and resumable uploads; in-memory contracts plus commit-specific native-CI loopback pairing and real-TLS upload-fault evidence. Deployed multi-machine acceptance remains open |
-| Storage | Conservative loose-object collection and storage admission; no automatic expiry of private checkpoints or acknowledged uploads, no power-loss guarantee |
-| Native platform and GitHub backup | Selected native process, Git-path, storage and resumable-transfer contracts run on Linux/macOS/Windows CI; asynchronous GitHub backup components exist. Full native adoption, real remote credentials and fresh-host recovery remain gates |
+| Storage | Conservative loose-object collection and storage admission; no automatic expiry of private recovery records or acknowledged uploads, no power-loss guarantee |
+| Native platform and GitHub backup | Selected native process, Git-path, storage and resumable-transfer contracts run on Linux/macOS/Windows CI; asynchronous GitHub backup components exist. Full native merge, real remote credentials and fresh-host recovery remain gates |
 | Supported deployment | Development/evaluation on Linux; production, native macOS/Windows, and multi-machine release gates remain open |
 
 The full contracts, limits, and missing gates live in [SCOPE.md](docs/SCOPE.md), [STORAGE.md](docs/STORAGE.md), and [GAP-CLOSURE.md](docs/GAP-CLOSURE.md). Keep an independent backup of valuable original work.
@@ -191,7 +142,8 @@ cargo fmt --check
 cargo clippy --locked --all-targets -- -D warnings
 python3 tests/adversarial.py
 python3 tests/gap_closure.py
-python3 tests/mcp_protocol.py
+uv run --no-project python tests/cli.py
+python3 tests/shared_commit.py
 python3 tests/source_sync.py
 
 # Standalone components are separate Cargo packages:
@@ -200,14 +152,14 @@ for component in crates/platform crates/repair-runner services/storage services/
 done
 ```
 
-The suites probe exact-checkpoint publication, private ancestry isolation, concurrent proposals, stale generations, conflict quarantine, unchanged files before adoption, explicit resolution, replay, and retained-state recovery. See the [test harness guide](tests/README.md) and [source-exchange review](docs/SOURCE-SYNC-REVIEW.md).
+The current shared-commit suite probes one-call integration, concurrent agents, required checks, conflict and merge resolution, and crash/lost-response recovery. Lower-level suites also probe private ancestry isolation, concurrent commits, stale generations, conflict block, unchanged files before merge, explicit resolution, replay, and retained-state recovery. See the [test harness guide](tests/README.md) and [source-exchange review](docs/SOURCE-SYNC-REVIEW.md).
 
 Record the tested revision and retain local test artifacts when reporting results; earlier passing runs do not certify later changes. [WAN simulation](docs/WAN-SIMULATION.md) tests delayed/faulted application messages; production networking needs its own evidence. No performance target or production-readiness claim follows from these fixtures.
 
 ## Next gates
 
 - Real Codex and Claude workflows with a verified writer-coordination contract
-- Complete native Linux/macOS/Windows IPC, adoption and filesystem acceptance beyond the selected CI contracts
+- Complete native Linux/macOS/Windows IPC, merge and filesystem acceptance beyond the selected CI contracts
 - Deployed TLS transport acceptance: certificate lifecycle, revocation, resumable transfer and multi-machine failure drills
 - Real remote backup and a fresh-host restore drill with explicit recovery coverage
 - Live confined model repair, conservative GC acceptance, storage-pressure and power-loss testing
@@ -220,4 +172,6 @@ Contributions that close a gate should include a reproducible test and a precise
 
 ## Optional ChatGPT Work / dot events
 
-See [the optional MCP Events connection](services/mcp-events/README.md) for direct GitHub identity, explicit project grants, identity-bound invitations and best-effort five-minute event delivery. Existing local stdio is unchanged. Real OAuth/domain and ChatGPT acceptance remain separate release gates.
+See [the optional MCP Events connection](services/mcp-events/README.md) for direct GitHub identity, explicit project grants, identity-bound invitations and best-effort five-minute event delivery. This optional read-only event integration is separate from source control through `wip`. Real OAuth/domain and ChatGPT acceptance remain separate release gates.
+
+Action evidence is stored centrally with acknowledged delivery and native collection for Codex, Claude Code, OpenCode and Pi. See [central action audit](docs/AUDIT.md) for coverage, operation and verification.

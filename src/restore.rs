@@ -613,10 +613,10 @@ mod tests {
         .unwrap();
         db.execute("INSERT INTO meta VALUES('policy',?1)", [policy.to_string()])
             .unwrap();
-        db.execute_batch("CREATE TABLE sync_proposal_origins(proposal TEXT PRIMARY KEY,device TEXT,source_proposal TEXT);
-            CREATE TABLE sync_imports(device TEXT,operation TEXT,digest TEXT,result TEXT,PRIMARY KEY(device,operation));
-            CREATE TABLE sync_exports(operation TEXT PRIMARY KEY,request_digest TEXT,manifest TEXT);
-            CREATE TABLE sync_remote_status(proposal TEXT PRIMARY KEY,revision INTEGER,digest TEXT,receipt TEXT);").unwrap();
+        db.execute_batch("CREATE TABLE IF NOT EXISTS sync_proposal_origins(proposal TEXT PRIMARY KEY,device TEXT,source_proposal TEXT);
+            CREATE TABLE IF NOT EXISTS sync_imports(device TEXT,operation TEXT,digest TEXT,result TEXT,PRIMARY KEY(device,operation));
+            CREATE TABLE IF NOT EXISTS sync_exports(operation TEXT PRIMARY KEY,request_digest TEXT,manifest TEXT);
+            CREATE TABLE IF NOT EXISTS sync_remote_status(proposal TEXT PRIMARY KEY,revision INTEGER,digest TEXT,receipt TEXT);").unwrap();
         db.execute(
             "INSERT INTO sync_proposal_origins VALUES('pending','public-client','public-source')",
             [],
@@ -831,26 +831,20 @@ mod tests {
             activate(&f.db, &request).unwrap()["activation_required"],
             false
         );
-        // A restored quarantine must be evaluated again before an agent receives
-        // a task. A missing check executable reliably fails without launching it.
+        // Restored work uses the same share-then-check policy as new commits.
+        // A missing runtime is an infrastructure failure, not a merge conflict.
         let integrated = crate::engine::execute(&f.state, json!({"op":"integrate"})).unwrap();
-        assert_eq!(integrated["outcomes"][0]["state"], "quarantined");
-        let task = &integrated["outcomes"][0]["resolution_task"];
-        assert_eq!(task["current_head"], base);
-        assert!(task["policy_sha256"]
-            .as_str()
-            .is_some_and(|s| s.len() == 64));
+        assert_eq!(integrated["outcomes"][0]["state"], "integrated");
+        let checked = crate::engine::validation_tick(&f.state).unwrap();
+        assert_eq!(checked["validation"]["state"], "failed");
+        assert_eq!(checked["validation"]["failure_kind"], "infrastructure");
         let destination = f.dir.join("restored-resolution-receipt");
         let receipt = crate::engine::execute(&f.state, json!({"op":"sync_export","kind":"receipt","proposal":"pending","operation_id":"fresh-restored-task","destination":destination})).unwrap();
         assert_eq!(receipt["ok"], true);
         let manifest: Value =
             serde_json::from_slice(&fs::read(destination.join("manifest.json")).unwrap()).unwrap();
-        assert_eq!(
-            manifest["receipt"]["resolution_task"]["proposal"],
-            "public-source"
-        );
-        assert_eq!(manifest["receipt"]["resolution_task"]["current_head"], base);
-        assert_eq!(manifest["receipt"]["resolution_task"]["attempt"], 0);
+        assert_eq!(manifest["receipt"]["state"], "integrated");
+        assert!(manifest["receipt"]["resolution_task"].is_null());
         assert!(!manifest.to_string().contains("PRIVATE_PATH_CANARY"));
     }
     #[test]
@@ -1151,7 +1145,7 @@ mod tests {
         let f = Fixture::new();
         let result = restore(&f.state, &f.db, &f.remote).unwrap();
         assert_eq!(result["unresolved_count"], 1);
-        assert_eq!(result["watermark"], 3);
+        assert_eq!(result["watermark"], 4);
         let git = Git::open(&f.state.join("coordinator.git"));
         assert_eq!(
             git.head("refs/wipstash/proposals/pending").unwrap(),
@@ -1189,7 +1183,10 @@ mod tests {
             [],
         )
         .unwrap();
-        assert_eq!(f.db.last_insert_rowid(), 4);
+        assert_eq!(
+            f.db.last_insert_rowid(),
+            result["watermark"].as_i64().unwrap() + 1
+        );
         let head = git.head("refs/wipstash/integration").unwrap();
         assert!(crate::engine::execute(&f.state, json!({"op":"integrate"}))
             .unwrap_err()

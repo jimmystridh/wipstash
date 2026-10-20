@@ -1,11 +1,14 @@
 //! Mandatory mutually authenticated HTTPS boundary for the fixed Wipstash engine.
+pub mod cloud;
 pub mod daemon;
 pub mod enrollment;
 pub mod pairing;
 pub mod pairing_cli;
 pub mod pairing_crypto;
 pub mod pairing_files;
-pub use pairing::AclSource;
+pub mod settings;
+use pairing::AclSource;
+pub use tokio::io::AsyncWriteExt;
 pub mod resumable;
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
@@ -409,6 +412,151 @@ impl Service {
         if body.len() > WIRE_MAX {
             return Err(error("body_bound"));
         }
+        if method.len() > 16 || path.len() > 512 {
+            return Err(error("request_bound"));
+        }
+        if path == "/v1/audit" {
+            if method != "POST" || body.len() > 64 * 1024 {
+                return Err(error("audit_bound"));
+            }
+            let batch: Value = serde_json::from_slice(body)?;
+            let result=self.engine(json!({"op":"audit_ingest","binding":{"project":self.config.project,"authority":self.config.authority,"epoch":self.config.epoch,"device":p.device},"certificate_sha256":fingerprint(certificate),"batch":batch})).await?;
+            return Ok(("application/json".into(), serde_json::to_vec(&result)?));
+        }
+        if path == "/v1/audit-log" {
+            if method != "GET" || body.len() > 1024 {
+                return Err(error("audit_bound"));
+            }
+            let request: Value = serde_json::from_slice(body)?;
+            let cursor = request["cursor"]
+                .as_u64()
+                .ok_or_else(|| error("invalid_page"))?;
+            let limit = request["limit"]
+                .as_u64()
+                .filter(|n| (1..=32).contains(n))
+                .ok_or_else(|| error("invalid_page"))?;
+            let result = self
+                .engine(json!({"op":"audit_log","cursor":cursor,"limit":limit}))
+                .await?;
+            return Ok(("application/json".into(), serde_json::to_vec(&result)?));
+        }
+        let mut nonce = [0u8; 24];
+        {
+            use ring::rand::SecureRandom;
+            ring::rand::SystemRandom::new()
+                .fill(&mut nonce)
+                .map_err(|_| error("randomness_unavailable"))?;
+        }
+        let correlation = fingerprint(&nonce);
+        let binding = json!({"project":self.config.project,"authority":self.config.authority,"epoch":self.config.epoch,"device":p.device});
+        let payload =
+            json!({"method":method,"path":path,"bytes":body.len(),"sha256":fingerprint(body)});
+        self.engine(json!({"op":"audit_transport","binding":binding,"certificate_sha256":fingerprint(certificate),"event_id":format!("{correlation}-start"),"correlation_id":correlation,"phase":"started","payload":payload})).await?;
+        let result = self
+            .route_admitted(&p, certificate, method, path, body)
+            .await;
+        let outcome = match &result {
+            Ok((kind, bytes)) => {
+                json!({"ok":true,"content_type":kind,"bytes":bytes.len(),"sha256":fingerprint(bytes)})
+            }
+            Err(error) => json!({"ok":false,"error":error.to_string()}),
+        };
+        self.engine(json!({"op":"audit_transport","binding":binding,"certificate_sha256":fingerprint(certificate),"event_id":format!("{correlation}-end"),"correlation_id":correlation,"phase":if result.is_ok(){"completed"}else{"failed"},"payload":outcome})).await?;
+        result
+    }
+    async fn route_admitted(
+        &self,
+        p: &Peer,
+        certificate: &[u8],
+        method: &str,
+        path: &str,
+        body: &[u8],
+    ) -> Result<(String, Vec<u8>)> {
+        if path == "/v1/validation" {
+            #[derive(Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct Query {
+                head: Option<String>,
+                #[serde(default)]
+                include_timings: bool,
+            }
+            if method != "GET" || body.len() > 1024 {
+                return Err(error("validation_bound"));
+            }
+            let query: Query = serde_json::from_slice(body)?;
+            if query.head.as_ref().is_some_and(|head| {
+                head.len() != 40
+                    || !head
+                        .bytes()
+                        .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+            }) {
+                return Err(error("invalid_head"));
+            }
+            let result = self
+                .engine(json!({"op":"validation_status","head":query.head,"include_timings":query.include_timings}))
+                .await?;
+            return Ok(("application/json".into(), serde_json::to_vec(&result)?));
+        }
+        if path == "/v1/coordination" {
+            if method == "GET" && body.is_empty() {
+                let result = self.engine(json!({"op":"coordination_export"})).await?;
+                let bytes = serde_json::to_vec(&result)?;
+                if bytes.len() > 512 * 1024 {
+                    return Err(error("coordination_bound"));
+                }
+                return Ok(("application/json".into(), bytes));
+            }
+            if method != "POST" || body.len() > 32 * 1024 {
+                return Err(error("coordination_bound"));
+            }
+            #[derive(Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct Declaration {
+                project: String,
+                authority: String,
+                epoch: u64,
+                device: String,
+                request: Value,
+            }
+            let d: Declaration = serde_json::from_slice(body)?;
+            if d.project != self.config.project
+                || d.authority != self.config.authority
+                || d.epoch != self.config.epoch
+                || d.device != p.device
+                || !matches!(
+                    d.request["op"].as_str(),
+                    Some(
+                        "task_claim"
+                            | "task_update"
+                            | "workspace_report"
+                            | "repair_update"
+                            | "repair_pickup"
+                            | "comment_add"
+                    )
+                )
+            {
+                return Err(error("coordination_identity"));
+            }
+            let original = d.request["operation_id"]
+                .as_str()
+                .filter(|s| valid_id(s))
+                .ok_or_else(|| error("invalid_identifier"))?;
+            let ledger = format!(
+                "remote-task-{}",
+                fingerprint(
+                    serde_json::to_string(&json!([p.device, original]))
+                        .unwrap()
+                        .as_bytes()
+                )
+            );
+            let request_digest = fingerprint(&serde_json::to_vec(&d.request)?);
+            let result=run_engine_response(&self.config.engine,&self.config.state,json!({"op":"coordination_remote","device":p.device,"request":d.request,"operation_id":ledger}),Duration::from_secs(60),true).await?;
+            let receipt = json!({"project":self.config.project,"authority":self.config.authority,"epoch":self.config.epoch,"device":p.device,"operation_id":original,"request_digest":request_digest,"result":result});
+            return Ok((
+                "application/json".into(),
+                serde_json::to_vec(&json!({"ok":true,"receipt":receipt}))?,
+            ));
+        }
         if path == "/v1/transfers" || path.starts_with("/v1/transfers/") {
             let binding = resumable::Binding {
                 certificate: fingerprint(certificate),
@@ -482,7 +630,7 @@ impl Service {
                         previous
                     } else {
                         let artifact = store.artifact(&binding, id)?;
-                        artifact.validate_upload(&p, &self.config)?;
+                        artifact.validate_upload(p, &self.config)?;
                         self.storage_admission(artifact.objects.len() as u64 + 512 * 1024)?;
                         let dir = tempfile::Builder::new()
                             .prefix("resume-import-")
@@ -500,7 +648,7 @@ impl Service {
         }
         if method == "POST" && path == "/v1/proposals" {
             let a = Artifact::decode(body)?;
-            a.validate_upload(&p, &self.config)?;
+            a.validate_upload(p, &self.config)?;
             self.storage_admission(body.len() as u64)?;
             let dir = tempfile::Builder::new()
                 .prefix("receive-")
@@ -625,7 +773,7 @@ impl Service {
                 manifest: read_file(&dest.join("manifest.json"), MANIFEST_MAX)?,
                 objects: read_file(&dest.join("objects.json"), PAYLOAD_MAX)?,
             };
-            a.validate_download(&p, &self.config)?;
+            a.validate_download(p, &self.config)?;
             let manifest = a.validate()?;
             if q.kind != "retained"
                 && (manifest["kind"] != q.kind
@@ -813,6 +961,7 @@ pub struct Client {
     pub tls: Arc<rustls::ClientConfig>,
     pub server_name: String,
     pub authority_fingerprint: String,
+    pub cloud: Option<cloud::HttpsClient>,
 }
 impl Client {
     pub async fn request_stream<S>(
@@ -829,6 +978,10 @@ impl Client {
             || !(matches!(
                 path,
                 "/v1/proposals"
+                    | "/v1/audit"
+                    | "/v1/audit-log"
+                    | "/v1/validation"
+                    | "/v1/coordination"
                     | "/v1/export"
                     | "/v1/history"
                     | "/v1/current-receipt"
@@ -905,6 +1058,9 @@ impl Client {
         path: &str,
         bytes: Vec<u8>,
     ) -> Result<Vec<u8>> {
+        if let Some(cloud) = &self.cloud {
+            return retry_request(|| cloud.request(method, path, &bytes)).await;
+        }
         retry_request(|| async {
             self.request_stream(
                 tokio::net::TcpStream::connect(address).await?,
@@ -954,6 +1110,7 @@ impl Client {
             )?),
             server_name,
             authority_fingerprint,
+            cloud: None,
         })
     }
 }
@@ -967,18 +1124,30 @@ async fn run_engine_with_timeout(
     request: Value,
     deadline: Duration,
 ) -> Result<Value> {
-    // No shell, no remote argv, no remote state/source/destination. All calls originate below.
+    run_engine_response(engine, state, request, deadline, false).await
+}
+async fn run_engine_response(
+    engine: &Path,
+    state: &Path,
+    request: Value,
+    deadline: Duration,
+    allow_task_rejection: bool,
+) -> Result<Value> {
+    // Fixed stdin protocol avoids OS argument-size limits and process-list disclosure.
     let mut child = tokio::process::Command::new(engine)
         .arg("--state")
         .arg(state)
-        .arg(request.to_string())
-        .stdin(std::process::Stdio::null())
+        .arg("stdin")
+        .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
         .kill_on_drop(true)
         .spawn()?;
     let mut stdout = child.stdout.take().ok_or_else(|| error("engine_stdout"))?;
+    let mut stdin = child.stdin.take().ok_or_else(|| error("engine_stdin"))?;
     let result = tokio::time::timeout(deadline, async {
+        stdin.write_all(format!("{request}\n").as_bytes()).await?;
+        drop(stdin);
         let mut bytes = Vec::new();
         (&mut stdout)
             .take(OUTPUT_MAX as u64 + 1)
@@ -990,6 +1159,29 @@ async fn run_engine_with_timeout(
         let status = child.wait().await?;
         let value: Value = serde_json::from_slice(&bytes)?;
         if !status.success() || value["ok"] != true {
+            if allow_task_rejection
+                && value["ok"] == false
+                && matches!(
+                    value["error"]["code"].as_str(),
+                    Some(
+                        "task_owner_mismatch"
+                            | "repair_owner_mismatch"
+                            | "repair_revision_mismatch"
+                            | "repair_lease_expired"
+                            | "repair_already_owned"
+                            | "repair_closed"
+                            | "repair_not_found"
+                            | "task_revision_mismatch"
+                            | "task_lease_expired"
+                            | "task_not_found"
+                            | "comment_subject_not_found"
+                            | "invalid_request"
+                            | "idempotency_mismatch"
+                    )
+                )
+            {
+                return Ok(value);
+            }
             // Preserve only reviewed static diagnostics; never forward engine output.
             if value["error"]["code"] == "binding_inspection_requires_recovery" {
                 return Err(error("binding_inspection_requires_recovery"));
@@ -1017,6 +1209,32 @@ pub struct Workstation {
     pub authority_device: String,
 }
 impl Workstation {
+    pub async fn validation_status(&self, head: Option<&str>, timings: bool) -> Result<Value> {
+        self.verify_binding().await?;
+        let response = self
+            .client
+            .request(
+                self.address,
+                "GET",
+                "/v1/validation",
+                serde_json::to_vec(&json!({"head":head,"include_timings":timings}))?,
+            )
+            .await?;
+        serde_json::from_slice(&response).map_err(Into::into)
+    }
+    pub async fn audit_log(&self, cursor: u64, limit: u32) -> Result<Value> {
+        self.verify_binding().await?;
+        let response = self
+            .client
+            .request(
+                self.address,
+                "GET",
+                "/v1/audit-log",
+                serde_json::to_vec(&json!({"cursor":cursor,"limit":limit}))?,
+            )
+            .await?;
+        serde_json::from_slice(&response).map_err(Into::into)
+    }
     async fn verify_binding(&self) -> Result<()> {
         for path in [&self.engine, &self.state, &self.staging] {
             if !path.is_absolute() {
@@ -1046,6 +1264,128 @@ impl Workstation {
             return Err(error("client_binding_mismatch"));
         }
         Ok(())
+    }
+    pub async fn flush_coordination(&self) -> Result<Value> {
+        self.verify_binding().await?;
+        let binding = json!({"project":self.project,"authority":self.authority,"epoch":self.epoch,"device":self.device});
+        let pending = run_engine(
+            &self.engine,
+            &self.state,
+            json!({"op":"coordination_pending"}),
+        )
+        .await?;
+        let c = &pending["binding"];
+        if c["project"] != self.project
+            || c["authority"] != self.authority
+            || c["epoch"] != self.epoch
+            || c["device"] != self.device
+        {
+            return Err(error("coordination_binding_mismatch"));
+        }
+        let commands = pending["commands"]
+            .as_array()
+            .ok_or_else(|| error("coordination_shape"))?;
+        let mut delivered = 0;
+        for command in commands {
+            let mut body = binding.clone();
+            body["request"] = command["request"].clone();
+            let response = self
+                .client
+                .request(
+                    self.address,
+                    "POST",
+                    "/v1/coordination",
+                    serde_json::to_vec(&body)?,
+                )
+                .await?;
+            let response: Value = serde_json::from_slice(&response)?;
+            let receipt = &response["receipt"];
+            if response["ok"] != true
+                || receipt["project"] != self.project
+                || receipt["authority"] != self.authority
+                || receipt["epoch"] != self.epoch
+                || receipt["device"] != self.device
+                || receipt["operation_id"] != command["operation_id"]
+                || receipt["request_digest"]
+                    != fingerprint(&serde_json::to_vec(&command["request"])?)
+            {
+                return Err(error("coordination_receipt_identity"));
+            }
+            run_engine(&self.engine,&self.state,json!({"op":"coordination_receipt","command_id":command["operation_id"],"receipt":receipt})).await?;
+            delivered += 1;
+        }
+        let data = self
+            .client
+            .request(self.address, "GET", "/v1/coordination", Vec::new())
+            .await?;
+        if data.len() > 512 * 1024 {
+            return Err(error("coordination_bound"));
+        }
+        let data: Value = serde_json::from_slice(&data)?;
+        run_engine(
+            &self.engine,
+            &self.state,
+            json!({"op":"coordination_import","data":data}),
+        )
+        .await?;
+        Ok(
+            json!({"ok":true,"delivered":delivered,"claims":data["claims"].as_array().map(Vec::len),"server_time":data["server_time"]}),
+        )
+    }
+    pub async fn flush_audit(&self) -> Result<Value> {
+        self.verify_binding().await?;
+        let expected = json!({"project":self.project,"authority":self.authority,"epoch":self.epoch,"device":self.device});
+        let mut batches = 0;
+        for _ in 0..16 {
+            let pending =
+                run_engine(&self.engine, &self.state, json!({"op":"audit_batch"})).await?;
+            if pending["binding"] != expected {
+                return Err(error("audit_binding_mismatch"));
+            }
+            let batch = &pending["batch"];
+            let records = batch["records"]
+                .as_array()
+                .ok_or_else(|| error("audit_batch_shape"))?;
+            if records.is_empty() {
+                break;
+            }
+            let last = records.last().unwrap();
+            let bytes = serde_json::to_vec(batch)?;
+            if bytes.len() > 64 * 1024 {
+                return Err(error("audit_bound"));
+            }
+            let response = self
+                .client
+                .request(self.address, "POST", "/v1/audit", bytes)
+                .await?;
+            let response: Value = serde_json::from_slice(&response)?;
+            let receipt = &response["receipt"];
+            if response["ok"] != true
+                || receipt["binding"] != expected
+                || receipt["producer"] != batch["producer"]
+                || receipt["through"] != last["sequence"]
+                || receipt["source_hash"] != last["hash"]
+                || receipt["server_sequence"].as_u64().is_none_or(|n| n == 0)
+                || !receipt["server_hash"].as_str().is_some_and(|s| {
+                    s.len() == 64
+                        && s.bytes()
+                            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+                })
+            {
+                return Err(error("audit_ack_identity"));
+            }
+            run_engine(
+                &self.engine,
+                &self.state,
+                json!({"op":"audit_ack","receipt":receipt}),
+            )
+            .await?;
+            batches += 1;
+        }
+        let mut status =
+            run_engine(&self.engine, &self.state, json!({"op":"audit_status"})).await?;
+        status["batches"] = json!(batches);
+        Ok(status)
     }
     pub async fn upload(&self, proposal: &str, operation: &str) -> Result<Value> {
         self.verify_binding().await?;
@@ -1079,15 +1419,17 @@ impl Workstation {
         {
             return Err(error("upload_binding"));
         }
+        if self.client.cloud.is_some() {
+            let bytes = self
+                .client
+                .request(self.address, "POST", "/v1/proposals", a.encode()?)
+                .await?;
+            return serde_json::from_slice(&bytes).map_err(Into::into);
+        }
         let status = resumable::upload(&a, |method, path, body| async move {
             let bytes = self
                 .client
-                .request_stream(
-                    tokio::net::TcpStream::connect(self.address).await?,
-                    &method,
-                    &path,
-                    body,
-                )
+                .request(self.address, &method, &path, body)
                 .await?;
             Ok(("application/json".into(), bytes))
         })

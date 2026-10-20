@@ -1,20 +1,32 @@
-mod adoption;
-mod backup;
-mod client;
-mod client_journal;
-mod engine;
-mod git;
-mod policy;
-mod replication;
-mod restore;
-mod transfer;
 use serde_json::{json, Value};
 use std::{io::BufRead, path::PathBuf};
+use wipstash::{client_journal, engine, vocabulary};
 fn request(state: &std::path::Path, s: &str) -> Value {
     match serde_json::from_str::<Value>(s)
         .map_err(|e| e.to_string())
-        .and_then(|v| engine::execute(state, v))
-    {
+        .and_then(|v| {
+            let public = v.get("message").is_some()
+                || matches!(
+                    v["op"].as_str(),
+                    Some(
+                        "clone"
+                            | "get_latest"
+                            | "merge"
+                            | "resolve_merge"
+                            | "commit_status"
+                            | "retry_commit"
+                    )
+                );
+            vocabulary::request(v)
+                .and_then(|v| engine::execute(state, v))
+                .map(|result| {
+                    if public {
+                        vocabulary::response(result)
+                    } else {
+                        result
+                    }
+                })
+        }) {
         Ok(v) => v,
         Err(e) => engine::error_response(&e),
     }
@@ -72,14 +84,31 @@ fn main() {
         std::process::exit(2);
     }
     let state = PathBuf::from(&args[2]);
-    if args[3] == "mcp" {
-        if let Err(e) = client::serve(std::io::stdin().lock(), std::io::stdout().lock(), |v| {
-            request(&state, &v.to_string())
-        }) {
-            eprintln!("mcp_io: {e}");
+    if args[3] == "audit-record" {
+        use std::io::Read;
+        let mut input = Vec::new();
+        let result = std::io::stdin()
+            .lock()
+            .take(16 * 1024 * 1024 + 1)
+            .read_to_end(&mut input)
+            .map_err(|e| e.to_string())
+            .and_then(|_| {
+                if input.len() > 16 * 1024 * 1024 {
+                    return Err("audit_payload_bound".into());
+                }
+                let record: Value = serde_json::from_slice(&input).map_err(|e| e.to_string())?;
+                engine::execute(&state, json!({"op":"audit_record","record":record}))
+            });
+        let result = result.unwrap_or_else(|e| engine::error_response(&e));
+        println!("{result}");
+        if result["ok"] == false {
             std::process::exit(1);
         }
         return;
+    }
+    if args[3] == "mcp" {
+        eprintln!("MCP support has been removed. Use wip --help and run your agent normally inside its own clone.");
+        std::process::exit(2);
     }
     if args[3] == "worker" {
         if let Err(e) = worker_startup(&state) {
@@ -98,6 +127,7 @@ fn main() {
             eprintln!("daemon_busy");
             std::process::exit(1)
         }
+        engine::start_validation_worker(state.clone());
         let mut next_backup = std::time::Instant::now();
         let mut backoff = 1u64;
         loop {
@@ -116,13 +146,22 @@ fn main() {
                 backoff = if blocked { (backoff * 2).min(60) } else { 1 };
                 next_backup = std::time::Instant::now() + std::time::Duration::from_secs(backoff);
             }
-            std::thread::sleep(std::time::Duration::from_millis(100));
+            std::thread::sleep(std::time::Duration::from_secs(1));
         }
     }
     if args[3] == "daemon" {
+        engine::start_validation_worker(state.clone());
         if let Err(e) = daemon(&state) {
             eprintln!("{e}");
             std::process::exit(1)
+        }
+        return;
+    }
+    if args[3] == "validate-once" {
+        let result = engine::validation_tick(&state).unwrap_or_else(|e| engine::error_response(&e));
+        println!("{result}");
+        if result["ok"] == false {
+            std::process::exit(1);
         }
         return;
     }

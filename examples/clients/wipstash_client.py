@@ -1,16 +1,7 @@
-"""Small, serialized stdio MCP client with a durable mutation receipt journal.
+"""Durable one-shot operator CLI client used by engine regression tests.
 
-Uses only the Python standard library and Wipstash's native private-file journal
-subprocess on Linux, macOS and Windows. journal_command explicitly selects a
-backend executable when the engine is launched through a wrapper. Windows does
-not promise directory-entry power-loss durability.
-Unsupported backends fail closed. Read-only sessions need no journal backend.
-This is not a native Codex/Claude client or proof of filesystem durability.
-
-Keep the journal outside source/workspace trees: it contains exact requests and
-results, which may be private. Give each engine/state endpoint its own journal.
-No operation is implicitly published, integrated, adopted, or replayed. A timed
-out server is disconnected, never killed; its operation/writers may still run.
+Normal agents use the wip executable directly. This helper preserves exact
+requests in the native journal and never starts an journal server or client daemon.
 """
 
 from __future__ import annotations
@@ -19,6 +10,7 @@ import contextlib
 import json
 import math
 import os
+from pathlib import Path
 import queue
 import re
 import shutil
@@ -28,26 +20,29 @@ import time
 import uuid
 
 
-PROTOCOL_VERSION = "2025-11-25"
 MAX_REQUEST_BYTES = 1024 * 1024
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 MAX_JOURNAL_FRAME = 10 * 1024 * 1024
 IDENTIFIER = re.compile(r"[A-Za-z0-9_-]{1,100}\Z")
 # Only operations the engine itself journals can enter the durable API.
 MUTATIONS = frozenset({
-    "open", "checkpoint", "publish", "adopt", "cancel", "command_run",
-    "command_recover", "configure", "resolve_adoption", "resolution_open",
-    "resolution_submit", "backup_flush", "retry_proposal",
+    "clone", "commit", "merge", "cancel", "command_run",
+    "command_recover", "configure", "resolve_merge", "resolution_open",
+    "backup_flush", "retry_commit",
     "sync_initialize_authority", "sync_add_peer",
+    "task_claim", "task_update", "repair_update", "comment_add", "workspace_close", "workspace_reopen",
 })
 READS = frozenset({
-    "status", "updates", "proposal_status", "operation_status", "events",
+    "status", "get_latest", "commit_status", "operation_status", "events",
     "resolution_tasks", "backup_status", "sync_status", "recovery_status",
     "sync_export_history", "sync_export_lookup", "sync_pending",
+    "audit_status", "audit_log", "audit_verify",
+    "task_list", "comment_list", "diff", "workspace_inventory", "conflict_status", "ignore_templates",
+    "repair_list", "validation_status",
 })
-PROPOSAL_OUTCOMES = frozenset({
-    "integrated", "already_included", "quarantined", "cancelled", "superseded",
-    "recovery_quarantined",
+COMMIT_OUTCOMES = frozenset({
+    "integrated", "already_included", "blocked", "cancelled", "superseded",
+    "recovery_blocked",
 })
 
 
@@ -81,7 +76,7 @@ class UncertainOperation(ClientError):
         )
 
 
-class ProposalTimeout(TimeoutError):
+class CommitTimeout(TimeoutError):
     def __init__(self, proposal, last_status):
         self.proposal = proposal
         self.last_status = last_status
@@ -149,16 +144,16 @@ class _StdioSession:
                     if not raw:
                         raise TransportError("Server disconnected before replying")
                     if len(raw) > self.response_limit or not raw.endswith(b"\n"):
-                        raise ProtocolError("Oversized or incomplete MCP response")
+                        raise ProtocolError("Oversized or incomplete journal response")
                     message = json.loads(raw)
                     if not isinstance(message, dict) or message.get("jsonrpc") != "2.0":
-                        raise ProtocolError("Invalid MCP response envelope")
+                        raise ProtocolError("Invalid journal response envelope")
                     if "id" not in message and isinstance(message.get("method"), str):
                         continue  # Notifications are not tool results.
                     if type(message.get("id")) is not int or message["id"] != identifier:
-                        raise ProtocolError("Mismatched MCP response ID")
+                        raise ProtocolError("Mismatched journal response ID")
                     if ("result" in message) == ("error" in message):
-                        raise ProtocolError("MCP reply must contain one result or error")
+                        raise ProtocolError("journal reply must contain one result or error")
                     self.replies.put(message)
                     break
         except Exception as error:
@@ -179,15 +174,12 @@ class _StdioSession:
         try:
             reply = self.replies.get(timeout=_seconds(timeout))
         except queue.Empty as error:
-            raise TransportError("MCP reply deadline exceeded") from error
+            raise TransportError("journal reply deadline exceeded") from error
         if isinstance(reply, Exception):
             raise reply
         if "error" in reply:
-            raise ProtocolError(f"MCP JSON-RPC error: {reply['error']!r}")
+            raise ProtocolError(f"journal JSON-RPC error: {reply['error']!r}")
         return reply["result"]
-
-    def initialized(self):
-        self.requests.put((None, b'{"jsonrpc":"2.0","method":"notifications/initialized"}\n'))
 
     def close(self, *, grace=0.0):
         if self.closed:
@@ -295,7 +287,7 @@ class _NativeJournal:
 
 
 class WipstashClient:
-    """Use read(), explicit mutate(), reconcile(), and wait_for_proposal().
+    """Use read(), explicit mutate(), reconcile(), and wait_for_commit().
 
     Completed same-ID requests return the saved reply. Pending same-ID requests
     only query operation_status, even after a client restart. Unresolved results
@@ -322,7 +314,6 @@ class WipstashClient:
         self._lock = threading.RLock()
         self._session = None
         self._closed = False
-        self.tools = {}
         self.journal = None
         self.journal_durability = None
         endpoint = {"command": self.command, "cwd": self.cwd}
@@ -347,65 +338,48 @@ class WipstashClient:
         self.close()
 
     def start(self, timeout=None):
-        with self._lock:
-            if self._closed:
-                raise ClientError("Client is closed")
-            if self._session is not None:
-                return
-            deadline = time.monotonic() + _seconds(self.timeout if timeout is None else timeout)
-            session = _StdioSession(self.command, self.cwd)
-            try:
-                result = session.request("initialize", {
-                    "protocolVersion": PROTOCOL_VERSION, "capabilities": {},
-                    "clientInfo": {"name": "wipstash-durable-python", "version": "1"},
-                }, self._remaining(deadline))
-                if not isinstance(result, dict) or result.get("protocolVersion") != PROTOCOL_VERSION:
-                    raise ProtocolError("Server negotiated an unsupported MCP version")
-                session.initialized()
-                discovery = session.request("tools/list", {}, self._remaining(deadline))
-                if not isinstance(discovery, dict) or not isinstance(discovery.get("tools"), list):
-                    raise ProtocolError("Invalid tools/list response")
-                self.tools = {tool["name"]: tool for tool in discovery["tools"]
-                              if isinstance(tool, dict) and isinstance(tool.get("name"), str)}
-                if "wipstash" not in self.tools or discovery.get("nextCursor") is not None:
-                    raise ProtocolError("Expected unpaginated Wipstash tool discovery")
-                self._session = session
-            except Exception:
-                session.close()
-                raise
+        if self._closed:
+            raise ClientError("Client is closed")
+        return
 
     @staticmethod
     def _remaining(deadline):
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            raise TransportError("MCP deadline exceeded")
+            raise TransportError("CLI deadline exceeded")
         return remaining
 
     def _disconnect(self, *, grace=0.0):
-        if self._session is not None:
-            self._session.close(grace=grace)
-            self._session = None
+        self._session = None
 
     def _call_engine(self, request, *, timeout=None):
-        deadline = time.monotonic() + _seconds(self.timeout if timeout is None else timeout)
-        self.start(self._remaining(deadline))
-        name = "wipstash_" + request["op"]
-        if name in self.tools:
-            arguments = {key: value for key, value in request.items() if key != "op"}
-        else:
-            name, arguments = "wipstash", {"request": request}
+        self.start()
+        removed = {"open", "updates", "adopt", "resolve_adoption", "proposal_status", "checkpoint", "publish", "integrate", "resolution_submit", "retry_proposal"}
+        if request.get("op") in removed or "intent" in request or "proposal" in request:
+            return {"ok": False, "error": {"code": "removed_workflow"}}
+        if "limit" in request and not 1 <= request["limit"] <= 32:
+            return {"ok": False, "error": {"code": "invalid_arguments"}, "outcome_certain": True}
+        value = dict(request)
+        if value.get("op") == "status":
+            value.setdefault("inspect_files", False)
         try:
-            result = self._session.request("tools/call", {"name": name, "arguments": arguments},
-                                           self._remaining(deadline))
-            if not isinstance(result, dict) or not isinstance(result.get("structuredContent"), dict):
-                raise ProtocolError("Tool result is missing structuredContent")
-            value = result["structuredContent"]
-            if type(value.get("ok")) is not bool:
-                raise ProtocolError("Engine result is missing boolean ok")
-            return value
-        except TransportError:
-            self._disconnect()
-            raise
+            if len(self.command) == 3 and self.command[1] == "--state":
+                executable = Path(self.command[0]).with_name("wip.exe" if os.name == "nt" else "wip")
+                operation = value.pop("op")
+                argv = [str(executable), "--json", "admin", operation, "--state", self.command[2], "--params", _json(value)]
+            else:
+                raise ValueError("Expected an explicit operator state binding")
+            completed = subprocess.run(argv, cwd=self.cwd,
+                capture_output=True, text=True, timeout=self.timeout if timeout is None else timeout)
+        except subprocess.TimeoutExpired as error:
+            raise TransportError("CLI operation timed out; inspect the retained operation ID") from error
+        try:
+            result = json.loads(completed.stdout)
+        except ValueError as error:
+            raise ProtocolError("CLI returned invalid JSON") from error
+        if type(result.get("ok")) is not bool:
+            raise ProtocolError("CLI response has no boolean outcome")
+        return result
 
     def read(self, op, *, timeout=None, **fields):
         if op not in READS:
@@ -473,10 +447,8 @@ class WipstashClient:
         try:
             self.start()
             query = {"op": "operation_status", "operation_id": operation_id}
-            schema = self.tools.get("wipstash_operation_status", {}).get("inputSchema", {})
-            envelope = "include_record" in schema.get("properties", {})
-            if envelope:
-                query["include_record"] = True
+            envelope = True
+            query["include_record"] = True
             result = self._call_engine(query)
         except TransportError as error:
             raise UncertainOperation(operation_id) from error
@@ -508,10 +480,10 @@ class WipstashClient:
                     raise JournalError("No local receipt for that operation ID")
                 return self._reconcile(record)
 
-    def wait_for_proposal(self, proposal, *, timeout=60.0, initial_delay=0.25, max_delay=2.0):
-        """Poll to an actionable disposition; never integrate, retry or adopt.
+    def wait_for_commit(self, proposal, *, timeout=60.0, initial_delay=0.25, max_delay=2.0):
+        """Poll to an actionable disposition; never integrate, retry or merge.
 
-        Quarantine is an outcome requiring review, not successful integration.
+        A blocked commit requires review, not successful integration.
         Deadline covers each read (including reconnect) as well as backoff.
         """
         deadline = self.clock() + _seconds(timeout)
@@ -521,19 +493,19 @@ class WipstashClient:
         while True:
             remaining = deadline - self.clock()
             if remaining <= 0:
-                raise ProposalTimeout(proposal, last)
+                raise CommitTimeout(proposal, last)
             try:
-                last = self.read("proposal_status", proposal=proposal,
+                last = self.read("commit_status", commit_id=proposal,
                                  timeout=min(self.timeout, remaining))
             except TransportError as error:
                 if self.clock() >= deadline:
-                    raise ProposalTimeout(proposal, last) from error
+                    raise CommitTimeout(proposal, last) from error
                 raise
-            if not last["ok"] or last.get("state") in PROPOSAL_OUTCOMES:
+            if not last["ok"] or last.get("state") in COMMIT_OUTCOMES:
                 return last
             remaining = deadline - self.clock()
             if remaining <= 0:
-                raise ProposalTimeout(proposal, last)
+                raise CommitTimeout(proposal, last)
             self.sleep(min(delay, remaining))
             delay = min(delay * 2, maximum)
 

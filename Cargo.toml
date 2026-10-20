@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 description = "Local-first isolated agent workspace prototype"
 license = "MIT"
+default-run = "wip"
 
 [dependencies]
 rusqlite = { version = "=0.39.0", features = ["bundled", "fallible_uint"] }
@@ -11,6 +12,10 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["raw_value"] }
 sha2 = "0.10"
 fs2 = "0.4"
+clap = { version = "4.6", features = ["derive"] }
+tempfile = "3"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+wipstash-transport = { path = "services/transport" }
 wipstash-repair-runner = { path = "crates/repair-runner" }
 wipstash-platform = { path = "crates/platform" }
 

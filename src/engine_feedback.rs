@@ -63,6 +63,11 @@ pub(super) fn validation(
         "integration_candidate"
     };
     let mut result = unchecked(scope, "no_snapshot_bound_check_results", None);
+    if details.is_some_and(|d| d["validation_phase"] == "pending") {
+        result["state"] = json!("pending");
+        result["reason"] = json!("background_checks");
+        return result;
+    }
     if matches!(
         phase,
         "coordinator_accepted" | "local_queued" | "queued_offline" | "pending"
@@ -142,10 +147,10 @@ pub(super) fn validation(
 pub(super) fn proposal_action(id: &str, phase: &str, task: Option<&Value>) -> Value {
     match phase {
         "quarantined" if task.is_some_and(|t| t["state"] == "escalated") =>
-            action(None, "Resolution attempt limit reached; review before deliberately publishing new work.", json!({"proposal":id})),
+            action(None, "Resolution attempt limit reached; stop and request an operator decision.", json!({"proposal":id})),
         "quarantined" => action(Some("resolution_open"), "Inspect the resolution task, then explicitly open a separate checkout to fix it.", json!({"proposal":id})),
         "coordinator_accepted" | "local_queued" | "queued_offline" =>
-            action(Some("proposal_status"), "Proposal is queued. Observe its result; integration and adoption are separate actions.", json!({"proposal":id})),
+            action(Some("proposal_status"), "Commit is queued for automatic integration. Observe its result; do not report shared before integration. Adoption remains deliberate.", json!({"proposal":id})),
         "integrated" | "already_included" =>
             action(Some("updates"), "Read available public updates before deciding whether to adopt them.", json!({})),
         _ => action(None, "No automatic publication or adoption is needed.", json!({"proposal":id})),
@@ -173,20 +178,33 @@ pub(super) fn error(error: &str) -> Value {
     let code = error.split(':').next().unwrap_or("internal_error");
     let (op, hint, fresh) = match code {
         "generation_mismatch" => (Some("status"), "Read the current workspace generation and inspect changes before retrying with a new operation ID.", true),
-        "writer_recovery_required" | "writer_confirmation_required" => (Some("status"), "Never retry the uncertain command. Stop and verify unmanaged writers first. Only then explicitly acknowledge command_recover with its own new operation ID.", false),
+        "writer_recovery_required" => (Some("status"), "Never retry the uncertain command. Stop and verify unmanaged writers first. Only then explicitly acknowledge command_recover with its own new operation ID.", false),
         "stale_resolution" => (Some("resolution_tasks"), "Preserve the isolated checkout for comparison. Read the task and open a fresh isolated checkout with new operation IDs; never substitute a newer expected_head.", true),
-        "stale_resolution_checkpoint" | "unresolved_conflict_markers" => (Some("status"), "Inspect and fix the isolated checkout, then checkpoint its current generation and submit using new operation IDs.", true),
+        "stale_resolution_checkpoint" | "unresolved_conflict_markers" => (Some("status"), "Inspect and fix the isolated checkout, then commit with its observed generation and a new operation ID.", true),
         "resolution_attestation_required" => (Some("resolution_tasks"), "Review every conflict path, then explicitly attest the exact set using a new operation ID.", true),
         "adoption_conflict" => (Some("status"), "Live files are unchanged. Preserve private edits and resolve deliberately before requesting another adoption.", true),
         "adoption_rolled_back" => (Some("status"), "Inspect restored files and current generation before retrying with a new operation ID.", true),
         "snapshot_unstable" => (Some("status"), "Stop concurrent writers and inspect the workspace before a new capture with a new operation ID.", true),
         "idempotency_mismatch" => (Some("operation_status"), "Inspect the original operation before deciding what to do. Replay only the identical request; a deliberately new action requires its own operation ID.", false),
-        "checkpoint_not_found" => (Some("status"), "Read the workspace checkpoint ID. Select an existing checkpoint or deliberately create one before retrying.", true),
-        "resolution_submit_required" => (Some("resolution_tasks"), "Publish this isolated checkout only through its owner's resolution_submit workflow.", true),
+        "task_revision_mismatch" | "task_owner_mismatch" | "task_lease_expired" | "task_not_found" => (Some("task_list"), "This task update was rejected. Inspect its current ownership, revision and lease before a new request.", true),
+        "repair_revision_mismatch" | "repair_owner_mismatch" | "repair_lease_expired" | "repair_already_owned" | "repair_closed" | "repair_not_found" => (Some("repair_list"), "The repair update was rejected without granting or extending a lease. Inspect current ownership, revision and expiry before a deliberate new request.", true),
+        "stale_conflict" => (Some("status"), "The conflict no longer matches this workspace. Preserve your review and inspect the original workspace before a fresh Merge.", true),
+        "review_recovery_required" => (Some("operation_status"), "Preserve the partial or edited review directory. Inspect the retained request and exact inputs before deliberately opening a new empty review; do not overwrite the existing directory.", true),
+        "conflict_already_resolved" => (Some("status"), "This candidate is already resolved. Inspect the original and review workspace status before beginning ordinary work.", true),
+        "resolution_not_required" | "resolution_workspace_closed" => (Some("status"), "This resolution is closed. Your files are preserved. Inspect workspace_mode and the recorded resolution result; completed successful resolution workspaces can commit ordinary work.", true),
+        "resolution_pending" => (Some("status"), "The resolution is submitted. Observe its commit result before starting another commit in this checkout.", false),
+        "merge_resolution_requires_acceptance" => (Some("resolve_adoption"), "Accept the prepared review on its original workspace with candidate, target, resolution_workspace and reviewed conflict paths. This updates local files without sharing.", true),
+        "writer_confirmation_required" => (Some("status"), "Stop all native writers before explicitly confirming archive; a status read does not establish that writers stopped.", true),
+        "workspace_pending_delivery" => (Some("audit_status"), "Preserve the workspace until source, coordination and audit evidence have reached the authority. Inspect pending delivery before a new archive request.", true),
+        "workspace_closed" | "workspace_busy" | "workspace_has_unshared_work" => (Some("status"), "Inspect workspace lifecycle, active claims and unshared work before choosing an explicit workspace action.", true),
+        "commit_baseline_conflict" => (Some("updates"), "Review and deliberately adopt shared updates, reconcile local changes, then use a new commit operation ID.", true),
+        "checkpoint_not_found" => (Some("status"), "Inspect operation_status for the commit and preserve the stored snapshot before deciding on a new action.", true),
+        "resolution_submit_required" => (Some("resolution_tasks"), "Commit the isolated resolution workspace with its exact resolution_head and conflict-path attestation.", true),
         "stale_head" | "coordinator_unreachable" => (Some("updates"), "Read available public updates and review the intended target before retrying.", true),
         "public_recovery_activation_required" | "recovery_required" => (Some("recovery_status"), "Inspect recovery state and preserve files before taking any explicit recovery action.", false),
         "resolution_attempts_exhausted" => (Some("resolution_tasks"), "The resolution budget is exhausted. Review the task before deciding whether new work is authorized.", true),
         "operation_not_found" => (Some("status"), "No operation with this ID is journaled. Verify the state directory and operation ID before deciding whether to submit the request.", false),
+        "invalid_page" | "invalid_arguments" | "invalid_request" => (None,"Correct the request arguments. Page limits are 1 through 32. This argument rejection does not require operation-status recovery.",true),
         _ => (Some("operation_status"), "The outcome may be uncertain. Inspect the original operation ID before retrying; do not create a new operation ID until its outcome is established.", false),
     };
     json!({"ok":false,"error":{"code":code,"message":error},
@@ -250,6 +268,7 @@ pub(super) fn complete(db: &Connection, r: &Value, mut v: Value) -> Value {
             | "status"
             | "updates"
             | "checkpoint"
+            | "commit"
             | "publish"
             | "integrate"
             | "adopt"
@@ -289,6 +308,15 @@ pub(super) fn complete(db: &Connection, r: &Value, mut v: Value) -> Value {
             v["checkpoint_generation"] = context["checkpoint_generation"].clone();
         }
     }
+    experience::outcome(db, r, &mut v);
+    if let Some(operation) = r["operation_id"].as_str() {
+        if let Ok(Some(conflict)) = conflicts::for_operation(db, operation) {
+            v["conflict_paths"] = conflict["conflict_paths"].clone();
+            v["candidate"] = conflict["id"].clone();
+            v["target"] = conflict["sides"]["shared"].clone();
+            v["conflict"] = conflict;
+        }
+    }
     if v["ok"] == false {
         let code = if v["writer_recovery_required"] == true || v["state"] == "uncertain" {
             "writer_recovery_required"
@@ -310,10 +338,15 @@ pub(super) fn complete(db: &Connection, r: &Value, mut v: Value) -> Value {
             json!({})
         };
         v["next_action"]["arguments"] = arguments;
+        if v["conflict"].is_object() {
+            v["next_action"] = json!({"op":"resolution_open","arguments":{"workspace":r["workspace"],"candidate":v["candidate"]},"reason":"Open the prepared base/local/shared/result review; original files remain unchanged.","requires_explicit_request":true});
+        }
     }
     if v.get("validation").is_none() {
-        v["validation"] = if matches!(op, "publish" | "resolution_submit" | "retry_proposal")
-            && v["ok"] == true
+        v["validation"] = if matches!(
+            op,
+            "commit" | "publish" | "resolution_submit" | "retry_proposal"
+        ) && v["ok"] == true
         {
             validation(
                 None,
@@ -356,7 +389,7 @@ pub(super) fn complete(db: &Connection, r: &Value, mut v: Value) -> Value {
                 | "resolve_adoption"
                 | "command_recover"
         ) {
-            action(Some("status"),"Inspect this workspace before the next explicit action. Checkpointing never publishes or adopts.",json!({"workspace":wid}))
+            action(Some("status"),"Inspect this workspace before the next explicit action. Commit shares work; adoption remains deliberate.",json!({"workspace":wid}))
         } else {
             action(
                 None,
@@ -531,7 +564,8 @@ mod tests {
         let db = Connection::open_in_memory().unwrap();
         init_db(&db).unwrap();
         db.execute("INSERT INTO meta VALUES('sync_config',?1)",[json!({"project":"p","authority":"a","epoch":1,"device":"a","role":"authority","peers":["d"]}).to_string()]).unwrap();
-        db.execute_batch("CREATE TABLE sync_proposal_origins(proposal TEXT PRIMARY KEY,device TEXT NOT NULL,source_proposal TEXT NOT NULL); INSERT INTO sync_proposal_origins VALUES('remote-p','d','original-p');").unwrap();
+        db.execute_batch("INSERT INTO sync_proposal_origins VALUES('remote-p','d','original-p');")
+            .unwrap();
         for phase in ["quarantined", "integrated", "coordinator_accepted"] {
             let next = proposal_action_for_store(&db, "remote-p", phase, None);
             assert_eq!(next["op"], Value::Null);

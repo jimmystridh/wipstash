@@ -148,7 +148,7 @@ fn required(db: &Connection) -> R<Config> {
 pub(super) fn is_client(db: &Connection) -> R<bool> {
     Ok(config(db)?.is_some_and(|c| c.role == "client"))
 }
-fn schema(db: &Connection) -> R<()> {
+pub(super) fn schema(db: &Connection) -> R<()> {
     sql(db.execute_batch("CREATE TABLE IF NOT EXISTS sync_exports(operation TEXT PRIMARY KEY,request_digest TEXT NOT NULL,manifest TEXT NOT NULL);
     CREATE INDEX IF NOT EXISTS sync_exports_head_sequence ON sync_exports(json_extract(manifest,'$.envelope.sequence')) WHERE json_extract(manifest,'$.kind')='head';
     CREATE TABLE IF NOT EXISTS sync_proposal_origins(proposal TEXT PRIMARY KEY,device TEXT NOT NULL,source_proposal TEXT NOT NULL);
@@ -840,6 +840,7 @@ pub(super) fn import(state: &Path, db: &Connection, r: &Value) -> R<Value> {
             // Use its latest head, never the old event head, for delayed duplicate delivery.
             let latest = replay.cached_head()?.ok_or("missing_replay_head")?;
             git.set_ref(HEAD, &latest, old.as_deref())?;
+            sql(db.execute("INSERT INTO meta(key,value) VALUES('sync_cached_head',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value WHERE value<>excluded.value",[&latest]))?;
             let result = json!({"ok":true,"state":"cached","head":latest,"sequence":replay.cursor()?,"duplicate":admission==replication::Admission::Duplicate,"files_changed":false,"authenticated":false});
             sql(db.execute(
                 "INSERT OR REPLACE INTO sync_imports VALUES(?1,?2,?3,?4)",
@@ -1099,15 +1100,16 @@ pub(super) fn recover_head(state: &Path, db: &Connection) -> R<()> {
     git.tree(&latest)
         .map_err(|e| format!("sync_recovery_required: admitted objects missing: {e}"))?;
     let old = git.head(HEAD).ok();
-    if old.as_ref() == Some(&latest) {
-        return Ok(());
-    }
-    if let Some(old) = &old {
-        if !first_parent_contains(&git, &latest, old)? {
-            return Err("sync_recovery_required: public cache diverged".into());
+    if old.as_ref() != Some(&latest) {
+        if let Some(old) = &old {
+            if !first_parent_contains(&git, &latest, old)? {
+                return Err("sync_recovery_required: public cache diverged".into());
+            }
         }
+        git.set_ref(HEAD, &latest, old.as_deref())?;
     }
-    git.set_ref(HEAD, &latest, old.as_deref())
+    sql(db.execute("INSERT INTO meta(key,value) VALUES('sync_cached_head',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value WHERE value<>excluded.value",[&latest]))?;
+    Ok(())
 }
 
 fn valid_oid(s: &str) -> bool {

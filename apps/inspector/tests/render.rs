@@ -8,8 +8,8 @@ fn demo_is_actual_dioxus_and_always_labelled_synthetic() {
     let html = dioxus_ssr::render(&dom);
     for expected in [
         "Synthetic workspace",
-        "Private checkpoints",
-        "Guard checkpoint writes",
+        "Recovery",
+        "Make checkpoint writes atomic",
         "src/checkpoint.rs",
         "fs::rename",
         "Read only",

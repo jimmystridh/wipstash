@@ -7,7 +7,7 @@ Install both binaries into the same Cargo bin directory from this checkout:
 ```sh
 cargo install --locked --path .
 cargo install --locked --path services/transport
-wipstash remote help
+wip remote help
 ```
 
 These commands install the executables only. They do not create credentials or start services. If using a custom install directory, keep both executables together and add that directory to your PATH.
@@ -19,30 +19,30 @@ Profiles and invitation files must live outside every source tree and registered
 Use an existing private parent directory. All paths must be absolute. Run as the account that will later run the listener. Example paths and addresses below are placeholders, not deployment instructions already executed:
 
 ```sh
-wipstash remote setup --directory /private/authority --state /private/authority-state \
+wip remote setup --directory /private/authority --state /private/authority-state \
   --project demo --authority central --device central-device --source /private/source \
   --server-name coordinator.example --enrollment-address 192.0.2.10:7444 \
   --sync-address 192.0.2.10:7443
-wipstash remote serve --directory /private/authority
+wip remote serve --directory /private/authority
 ```
 
 Defaults bind loopback (`127.0.0.1:7444` enrollment, `127.0.0.1:7443` sync), with TLS name `localhost`; remote devices need explicitly reachable addresses and the matching server name. The two endpoints are separate. Sync always requires a client certificate. Enrollment exposes only credential enrollment and recovery. On a fresh authority state, `--source` explicitly selects the initial public source import; it is never inferred from the current directory. Omit it only when the engine state is already initialized. Setup generates a local CA and server credentials, writes protected configuration, validates the engine binding, and initializes an authority with no peers. It does not open listeners or install an operating-system service. Serve is the explicit listener-starting step.
 
 ```sh
-wipstash remote device invite --directory /private/authority \
+wip remote device invite --directory /private/authority \
   --device laptop --out /private/invites/laptop.wipstash-invite
 ```
 
 Invitation output filenames must end in `.wipstash-invite`. This reserved credential format is excluded from Wipstash checkpoints, in addition to the source/workspace placement checks. The output parent must already exist and be private. Invitation files are create-only. An invitation lasts 15 minutes by default; `--expires-in SECONDS` accepts 60–86400. Invite reserves the engine peer before creating a network grant invitation; reservation alone grants no access. Pre-existing engine peers without a matching pairing intent are not silently claimed.
 
-If an invitation output is lost or writing it fails after reservation, inspect the protected output first. To explicitly invalidate only pending invitations and reissue, run `wipstash remote device cancel-invite --directory /private/authority --device laptop`, then repeat `device invite` (or `device rotate` for an existing generation) with a new output path. This does not revoke an active device or reuse a retired identity.
+If an invitation output is lost or writing it fails after reservation, inspect the protected output first. To explicitly invalidate only pending invitations and reissue, run `wip remote device cancel-invite --directory /private/authority --device laptop`, then repeat `device invite` (or `device rotate` for an existing generation) with a new output path. This does not revoke an active device or reuse a retired identity.
 
 Transfer the entire invitation through a trusted private channel. The invitation contains a bearer secret and the intended project, device, authority, CA, endpoints, TLS names and pins. A pin received in an untrusted invitation does not independently authenticate the coordinator. Never paste the secret into argv, a URL, environment variables, chat logs, or shell history. The CLI prints no invitation secret.
 
 ## Joining device
 
 ```sh
-wipstash remote join --directory /private/laptop --state /private/laptop-state \
+wip remote join --directory /private/laptop --state /private/laptop-state \
   --invite-file /private/invites/laptop.wipstash-invite
 ```
 
@@ -63,11 +63,11 @@ Starting that worker is a separate explicit choice and may perform configured sy
 ## Status, diagnosis and revocation
 
 ```sh
-wipstash remote status --directory /private/laptop
-wipstash remote doctor --directory /private/laptop
-wipstash remote doctor --directory /private/laptop --online
-wipstash remote device list --directory /private/authority
-wipstash remote device revoke --directory /private/authority --device laptop
+wip remote status --directory /private/laptop
+wip remote doctor --directory /private/laptop
+wip remote doctor --directory /private/laptop --online
+wip remote device list --directory /private/authority
+wip remote device revoke --directory /private/authority --device laptop
 ```
 
 Status reports local recorded state, including whether a previous connectivity check completed. It is not a live health assertion. Doctor checks local files and their protection without launching an engine, opening a writable store, enrolling, recovering or probing the network. It does not certify current authorization or remote reachability by default. Explicit `doctor --online` for a client adds a bounded read-only authenticated history request without installing or changing credentials; it distinguishes pin mismatch and server rejection where available.
@@ -77,10 +77,10 @@ Revocation takes effect for subsequent requests, including requests on existing 
 ## Replacement / certificate rotation
 
 ```sh
-wipstash remote device list --directory /private/authority
-wipstash remote device rotate --directory /private/authority --device laptop \
+wip remote device list --directory /private/authority
+wip remote device rotate --directory /private/authority --device laptop \
   --generation 1 --out /private/invites/laptop-replacement.wipstash-invite
-wipstash remote join --directory /private/laptop-generation-2 --state /private/laptop-state \
+wip remote join --directory /private/laptop-generation-2 --state /private/laptop-state \
   --invite-file /private/invites/laptop-replacement.wipstash-invite
 ```
 

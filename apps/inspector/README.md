@@ -19,7 +19,7 @@ The Rust frontend has its own `Cargo.lock` and does not change the core's depend
 ## Use
 
 - Choose all workspaces or a named workspace; generation and adopted-base information remain explicit.
-- Switch between private checkpoints and shared proposals/promotions.
+- Switch between local recovery commits and shared proposals/promotions.
 - History is ordered by journal sequence, not fabricated timestamps. Entries without a sequence are labelled “order unknown.”
 - Select a history entry, then a file. Diffs are fetched lazily and bounded by the server and renderer. Request identities prevent an old response appearing under a newly selected title or file.
 - Filter the **loaded page** of history by title, ID, workspace, status, or commit. File search likewise filters the loaded page. Pagination loads older history and further file pages; counts and change totals apply to the current page.
@@ -28,7 +28,7 @@ The Rust frontend has its own `Cargo.lock` and does not change the core's depend
 - Keyboard: `/` focuses history search, `j`/`k` select adjacent history entries, `s` toggles split view, `?` opens help, Escape closes it. Shortcuts ignore inputs, selects, textareas, editable content and modified key combinations.
 - Mobile retains the workspace selector and private/shared navigation.
 
-Read-only is an application boundary, not proof that the caller's local machine is trustworthy. Do not expose this server publicly: private checkpoint source is intentionally visible to the local inspector.
+Read-only is an application boundary, not proof that the caller's local machine is trustworthy. Do not expose this server publicly: private recovery record source is intentionally visible to the local inspector.
 
 ## Explicit demo and design preview
 

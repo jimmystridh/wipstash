@@ -1,9 +1,23 @@
+#[path = "engine_conflicts.rs"]
+mod conflicts;
+#[path = "engine_coordination.rs"]
+mod coordination;
+#[path = "engine_experience.rs"]
+mod experience;
 #[path = "engine_feedback.rs"]
 mod feedback;
+#[path = "engine_lifecycle.rs"]
+mod lifecycle;
+#[path = "engine_observation.rs"]
+mod observation;
 #[path = "engine_resolution.rs"]
 mod resolution;
+#[path = "engine_commit.rs"]
+mod shared_commit;
 #[path = "engine_sync.rs"]
 mod sync;
+#[path = "engine_validation.rs"]
+mod validation;
 use crate::{adoption, git::Git};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
@@ -233,6 +247,8 @@ fn init_db(db: &Connection) -> R<()> {
  CREATE TABLE IF NOT EXISTS checkpoints(id TEXT PRIMARY KEY,workspace TEXT NOT NULL REFERENCES workspaces(id),commit_oid TEXT NOT NULL,tree TEXT NOT NULL,base TEXT NOT NULL,generation INTEGER NOT NULL);
  CREATE TABLE IF NOT EXISTS proposals(id TEXT PRIMARY KEY,workspace TEXT NOT NULL,checkpoint TEXT NOT NULL,commit_oid TEXT NOT NULL,base TEXT NOT NULL,intent TEXT NOT NULL,state TEXT NOT NULL,head TEXT,details TEXT);
  CREATE TABLE IF NOT EXISTS operations(id TEXT PRIMARY KEY,digest TEXT NOT NULL,request TEXT NOT NULL,result TEXT);
+ CREATE TABLE IF NOT EXISTS capture_intents(id TEXT PRIMARY KEY,digest TEXT NOT NULL,request TEXT NOT NULL,result TEXT);
+ CREATE TABLE IF NOT EXISTS commit_preparations(id TEXT PRIMARY KEY REFERENCES operations(id),checkpoint TEXT NOT NULL,tree TEXT NOT NULL,base TEXT NOT NULL);
  CREATE TABLE IF NOT EXISTS candidates(id TEXT PRIMARY KEY,head TEXT NOT NULL,proposal TEXT NOT NULL,tree TEXT NOT NULL,policy_hash TEXT NOT NULL,evidence TEXT NOT NULL,state TEXT NOT NULL);
  CREATE TABLE IF NOT EXISTS promotions(id TEXT PRIMARY KEY,proposal TEXT NOT NULL,old TEXT NOT NULL,new TEXT NOT NULL,state TEXT NOT NULL);
  CREATE TABLE IF NOT EXISTS adoptions(id TEXT PRIMARY KEY,workspace TEXT NOT NULL,old_base TEXT NOT NULL,target TEXT NOT NULL,commit_oid TEXT NOT NULL,tree TEXT NOT NULL,old_files TEXT NOT NULL,new_files TEXT NOT NULL,stage TEXT NOT NULL,backup TEXT NOT NULL,state TEXT NOT NULL,generation INTEGER NOT NULL);
@@ -240,7 +256,15 @@ fn init_db(db: &Connection) -> R<()> {
  CREATE TABLE IF NOT EXISTS commands(id TEXT PRIMARY KEY,workspace TEXT NOT NULL REFERENCES workspaces(id),state TEXT NOT NULL,generation INTEGER NOT NULL);
  CREATE TABLE IF NOT EXISTS events(seq INTEGER PRIMARY KEY AUTOINCREMENT,kind TEXT NOT NULL,data TEXT NOT NULL);
  PRAGMA user_version=1;"))?;
+    sync::schema(db)?;
     resolution::schema(db)?;
+    conflicts::schema(db)?;
+    coordination::schema(db)?;
+    validation::schema(db)?;
+    sql(db.execute(
+        "INSERT INTO meta SELECT 'observation_schema','2' WHERE EXISTS(SELECT 1 FROM meta WHERE key='authority') ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        [],
+    ))?;
     Ok(())
 }
 fn recover(state: &Path, db: &Connection, local_only: bool) -> R<()> {
@@ -314,9 +338,12 @@ fn recover(state: &Path, db: &Connection, local_only: bool) -> R<()> {
                 r.get::<_, String>(2)?,
                 r.get::<_, String>(3)?,
             ))
-        }))?;
+        }))?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|e| e.to_string())?;
+        drop(stmt);
         for row in rows {
-            let (id, p, old, new) = sql(row)?;
+            let (id, p, old, new) = row;
             let head = git.head(HEAD)?;
             if head == old {
                 git.set_ref(HEAD, &new, Some(&old))?;
@@ -344,6 +371,17 @@ fn recover(state: &Path, db: &Connection, local_only: bool) -> R<()> {
                 "integrated",
                 &json!({"proposal":p,"head":new,"evidence":"unchecked","recovered":true}),
             )?;
+            let actual = git.head(HEAD)?;
+            validation::schedule_head(
+                state,
+                db,
+                if actual == new {
+                    Some(p.as_str())
+                } else {
+                    None
+                },
+                &actual,
+            )?;
             sql(db.execute_batch("COMMIT"))?;
         }
     }
@@ -357,9 +395,12 @@ fn recover(state: &Path, db: &Connection, local_only: bool) -> R<()> {
             r.get::<_, String>(4)?,
             r.get::<_, String>(5)?,
         ))
-    }))?;
+    }))?
+    .collect::<rusqlite::Result<Vec<_>>>()
+    .map_err(|e| e.to_string())?;
+    drop(stmt);
     for row in rows {
-        let (id, wid, old, new, backup, phase) = sql(row)?;
+        let (id, wid, old, new, backup, phase) = row;
         ensure_writer_idle(db, &wid)
             .map_err(|e| format!("recovery_required: adoption recovery blocked: {e}"))?;
         let w = ws(db, &wid)?;
@@ -381,6 +422,7 @@ fn recover(state: &Path, db: &Connection, local_only: bool) -> R<()> {
             event(db, "adoption_rolled_back", &json!({"operation_id":id}))?;
         }
     }
+    shared_commit::recover_submissions(state, db)?;
     Ok(())
 }
 fn finalize_adoption(db: &Connection, id: &str) -> R<Value> {
@@ -396,6 +438,21 @@ fn finalize_adoption(db: &Connection, id: &str) -> R<Value> {
         params![wid, target, commit, g + 1],
     ))?;
     sql(db.execute("UPDATE adoptions SET state='committed' WHERE id=?1", [id]))?;
+    let request: Option<String> = sql(db
+        .query_row("SELECT request FROM operations WHERE id=?1", [id], |r| {
+            r.get(0)
+        })
+        .optional())?;
+    if let Some(candidate) = request
+        .and_then(|r| serde_json::from_str::<Value>(&r).ok())
+        .and_then(|r| r["candidate"].as_str().map(str::to_owned))
+    {
+        conflicts::complete(db, &candidate)?;
+        sql(db.execute(
+            "UPDATE adoption_conflicts SET state='resolved' WHERE id=?1",
+            [candidate],
+        ))?;
+    }
     finish(db, id, &result)?;
     event(
         db,
@@ -406,12 +463,46 @@ fn finalize_adoption(db: &Connection, id: &str) -> R<Value> {
     Ok(result)
 }
 pub fn execute(state: &Path, r: Value) -> R<Value> {
+    if r["op"] == "validation_evaluate" {
+        return validation::evaluate_claim(state, &r["claim"]);
+    }
+    if r["op"] == "validation_tick" {
+        return validation::tick(state);
+    }
+    if crate::audit::handles(r["op"].as_str().unwrap_or("")) {
+        return crate::audit::dispatch(state, &r);
+    }
+    crate::audit::execute(state, &r, || {
+        validation::poll(state, &r)?;
+        execute_inner(state, r.clone())
+    })
+}
+fn execute_inner(state: &Path, r: Value) -> R<Value> {
     let diagnostic_start = std::time::Instant::now();
     sqlite_phase(diagnostic_start, "entered");
+    if let Some(result) = observation::try_execute(state, &r) {
+        return result;
+    }
     if r["op"] == "sync_binding_status" {
         return sync::binding_status(state);
     }
     io(fs::create_dir_all(state))?;
+    let _workspace_fence = observation::workspace_fence(state, &r)?;
+    let capture_preparation_started = std::time::Instant::now();
+    let prepared_capture = observation::prepare_capture(state, &r)?;
+    let capture_preparation_ms = capture_preparation_started.elapsed().as_millis();
+    let _backup_fence = if matches!(r["op"].as_str(), Some("backup_tick" | "backup_flush")) {
+        let file = io(OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(state.join("backup-worker.lock")))?;
+        fs2::FileExt::lock_exclusive(&file).map_err(|e| e.to_string())?;
+        Some(file)
+    } else {
+        None
+    };
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -427,7 +518,19 @@ pub fn execute(state: &Path, r: Value) -> R<Value> {
         .write(true)
         .open(state.join("state.lock")))?;
     sqlite_phase(diagnostic_start, "state_lock_waiting");
+    let observed_owner = observation::observed_owner(state);
+    let lock_started = std::time::Instant::now();
     fs2::FileExt::lock_exclusive(&lock).map_err(|e| e.to_string())?;
+    let lock_wait_ms = lock_started.elapsed().as_millis();
+    let _state_owner = observation::StateOwner::install(state, &r)?;
+    let _coordination_fence = if matches!(
+        r["op"].as_str(),
+        Some("workspace_close" | "workspace_reopen")
+    ) {
+        Some(observation::coordination_fence(state)?)
+    } else {
+        None
+    };
     sqlite_phase(diagnostic_start, "state_lock_acquired");
     let db = sql(Connection::open(state.join("state.sqlite")))?;
     sqlite_phase(diagnostic_start, "sqlite_opened");
@@ -454,6 +557,7 @@ pub fn execute(state: &Path, r: Value) -> R<Value> {
                 | "sync_reexport"
                 | "sync_export_current_head"
                 | "publish"
+                | "commit"
                 | "integrate"
                 | "retry_proposal"
                 | "resolution_open"
@@ -461,12 +565,19 @@ pub fn execute(state: &Path, r: Value) -> R<Value> {
                 | "cancel"
                 | "backup_flush"
                 | "backup_tick"
+                | "validation_claim"
+                | "validation_complete"
         )
     {
         return Err("public_recovery_activation_required: review recovery_status, restore the matching policy, and explicitly activate the recovered authority".into());
     }
-    recover(state, &db, matches!(op, "checkpoint" | "command_run"))?;
+    recover(
+        state,
+        &db,
+        matches!(op, "checkpoint" | "commit" | "command_run"),
+    )?;
     sync::recover_head(state, &db)?;
+    conflicts::reconcile_completed(&db)?;
     sqlite_phase(diagnostic_start, "recovery_complete");
     if sync::is_client(&db)?
         && matches!(
@@ -478,6 +589,8 @@ pub fn execute(state: &Path, r: Value) -> R<Value> {
                 | "retry_proposal"
                 | "backup_flush"
                 | "backup_tick"
+                | "validation_claim"
+                | "validation_complete"
         )
     {
         return Err("authority_required: operation unavailable on a client public cache".into());
@@ -504,6 +617,7 @@ pub fn execute(state: &Path, r: Value) -> R<Value> {
         op,
         "open"
             | "checkpoint"
+            | "commit"
             | "publish"
             | "adopt"
             | "cancel"
@@ -517,6 +631,14 @@ pub fn execute(state: &Path, r: Value) -> R<Value> {
             | "retry_proposal"
             | "sync_initialize_authority"
             | "sync_add_peer"
+            | "workspace_close"
+            | "workspace_reopen"
+            | "task_claim"
+            | "task_update"
+            | "coordination_remote"
+            | "repair_update"
+            | "repair_pickup"
+            | "comment_add"
     );
     let id = if mutating {
         let id = field(&r, "operation_id")?;
@@ -526,6 +648,7 @@ pub fn execute(state: &Path, r: Value) -> R<Value> {
         None
     };
     if let Some(id) = id {
+        observation::check_capture_identity(&db, id, &r)?;
         let existing: Option<(String, Option<String>)> = sql(db
             .query_row(
                 "SELECT digest,result FROM operations WHERE id=?1",
@@ -551,13 +674,15 @@ pub fn execute(state: &Path, r: Value) -> R<Value> {
     }
     let fenced = if matches!(
         op,
-        "checkpoint" | "publish" | "adopt" | "resolve_adoption" | "command_run"
+        "checkpoint" | "commit" | "publish" | "adopt" | "resolve_adoption" | "command_run"
     ) {
-        ensure_writer_idle(&db, field(&r, "workspace")?)
+        lifecycle::ensure_open(&db, field(&r, "workspace")?)
+            .and_then(|()| ensure_writer_idle(&db, field(&r, "workspace")?))
     } else {
         Ok(())
     };
     sqlite_phase(diagnostic_start, "dispatch");
+    let dispatch_start = std::time::Instant::now();
     let result = fenced.and_then(|()| match op {
         "sync_export" | "sync_reexport" => sync::export(state, &db, &r),
         "sync_export_history" => sync::export_history(&db, &r),
@@ -569,11 +694,22 @@ pub fn execute(state: &Path, r: Value) -> R<Value> {
         "sync_pending" => sync::pending(&db, &r),
         "sync_export_current_head" => sync::export_current_head(state, &db, &r),
         "resolution_tasks" => resolution::tasks(&db, &r),
-        "resolution_open" => resolution::open(state, &db, &r),
+        "resolution_open" => {
+            if r.get("candidate").is_some() && r.get("proposal").is_none() {conflicts::open(state,&db,&r)}
+            else if r.get("candidate").is_none() {resolution::open(state,&db,&r)}
+            else {Err("invalid_request: provide exactly one commit_id or candidate".into())}
+        },
+        "conflict_status" => conflicts::describe(&db,field(&r,"candidate")?,field(&r,"workspace")?).map(|conflict|json!({"ok":true,"conflict":conflict})),
+        "ignore_templates" => Ok(experience::templates()),
+        "workspace_inventory" => lifecycle::inventory(state,&db,&r),
+        "workspace_close" | "workspace_reopen" => lifecycle::change(state,&db,&r),
+        "task_claim" | "task_update" | "task_list" | "repair_update" | "repair_pickup" | "comment_add" | "comment_list" | "coordination_pending" | "coordination_receipt" | "coordination_export" | "coordination_import" | "coordination_remote" => coordination::dispatch(state,&db,&r),
+        "validation_claim" | "validation_complete" | "validation_status" | "repair_list" => validation::dispatch(state,&db,&r),
         "resolution_submit" => resolution::submit(state, &db, &r),
         "open" => open(state, &db, &r),
         "status" => status(state, &db, &r),
-        "checkpoint" => checkpoint(state, &db, &r),
+        "checkpoint" => checkpoint(state, &db, &r, prepared_capture.as_ref()),
+        "commit" => shared_commit::commit(state, &db, &r, prepared_capture.as_ref()),
         "publish" => publish(state, &db, &r),
         "integrate" => integrate(state, &db, &r),
         "adopt" => adopt(state, &db, &r),
@@ -590,7 +726,7 @@ pub fn execute(state: &Path, r: Value) -> R<Value> {
                 git.head(HEAD)?
             };
             Ok(
-                json!({"ok":true,"adopted":w.base,"latest":latest,"coordinator_online":online && !sync::is_client(&db)?,"cached":!online || sync::is_client(&db)?,"remote_contact_unverified":sync::is_client(&db)?,"generation":w.generation,"files_changed":false,"resolution_tasks":resolution::tasks(&db,&r)?["tasks"]}),
+                json!({"ok":true,"adopted":w.base,"latest":latest,"coordinator_online":online && !sync::is_client(&db)?,"cached":!online || sync::is_client(&db)?,"remote_contact_unverified":sync::is_client(&db)?,"generation":w.generation,"files_changed":false,"resolution_tasks":resolution::tasks(&db,&r)?["tasks"],"incoming":experience::incoming(state,&db,wid,r["cursor"].as_u64().unwrap_or(0),r["limit"].as_u64().unwrap_or(16))?,"coordination":coordination::list(&db,None,0,16)?}),
             )
         }
         "operation_status" => {
@@ -628,7 +764,7 @@ pub fn execute(state: &Path, r: Value) -> R<Value> {
         "cancel" => cancel(&db, &r),
         "command_run" => command_run(state, &db, &r),
         "command_recover" => command_recover(&db, &r),
-        "configure" => configure(&db, &r),
+        "configure" => configure(&db, &r).and_then(|v| {let head=coordinator(state).head(HEAD)?;validation::schedule_head(state,&db,None,&head)?;Ok(v)}),
         "resolve_adoption" => resolve_adoption(state, &db, &r),
         "backup_verify_restore" => {
             crate::backup::verify_restore(Path::new(field(&r, "destination")?))
@@ -638,7 +774,7 @@ pub fn execute(state: &Path, r: Value) -> R<Value> {
             if b["state"] == "not_configured" || b["state"] == "complete" {
                 Ok(b)
             } else {
-                crate::backup::flush(
+                crate::backup::flush_with_lock(
                     state,
                     &db,
                     Path::new(
@@ -646,21 +782,83 @@ pub fn execute(state: &Path, r: Value) -> R<Value> {
                             .as_str()
                             .ok_or("backup_destination_missing")?,
                     ),
+                    Some(&lock),
                 )
             }
         }
         "backup_status" => crate::backup::status(&db),
-        "backup_flush" => crate::backup::flush(state, &db, Path::new(field(&r, "destination")?)),
+        "backup_flush" => crate::backup::flush_with_lock(state, &db, Path::new(field(&r, "destination")?),Some(&lock)),
         _ => Err("unsupported_operation".into()),
-    }).map(|value| feedback::complete(&db, &r, value));
+    }).and_then(|value| {conflicts::reconcile_completed(&db)?;Ok(feedback::complete(&db, &r, value))});
     sqlite_phase(diagnostic_start, "dispatch_complete");
+    let result = result.map(|mut v| {
+        if prepared_capture.is_some() {
+            v["timing"]["capture_preparation_ms"] = json!(capture_preparation_ms);
+        }
+        if lock_wait_ms > 0 {
+            v["lock_blocker_observed_before_wait"] = observed_owner.clone();
+        }
+        if op == "operation_status" {
+            return v;
+        }
+        if op.starts_with("sync_") || op.starts_with("coordination_") {
+            let _ = validation::timing(
+                &db,
+                &r,
+                lock_wait_ms,
+                dispatch_start.elapsed().as_millis(),
+                diagnostic_start.elapsed().as_millis(),
+                &mut json!({}),
+            );
+            return v;
+        }
+        if !matches!(
+            op,
+            "validation_claim"
+                | "validation_complete"
+                | "coordination_export"
+                | "coordination_import"
+                | "coordination_remote"
+                | "integrate"
+                | "backup_tick"
+                | "coordination_pending"
+        ) {
+            if let Err(error) = validation::decorate(&db, &r, &mut v) {
+                v["notice_error"] = json!(error);
+            }
+        }
+        if let Err(error) = validation::timing(
+            &db,
+            &r,
+            lock_wait_ms,
+            dispatch_start.elapsed().as_millis(),
+            diagnostic_start.elapsed().as_millis(),
+            &mut v,
+        ) {
+            v["timing_error"] = json!(error);
+        }
+        v
+    });
     match (id, result) {
         (Some(id), Ok(value)) => {
             finish(&db, id, &value)?;
             Ok(value)
         }
         (Some(id), Err(error)) => {
-            let value = feedback::complete(&db, &r, error_response(&error));
+            let mut value = feedback::complete(&db, &r, error_response(&error));
+            if let Err(error) = validation::decorate(&db, &r, &mut value) {
+                value["notice_error"] = json!(error);
+            }
+            if let Err(error) = validation::timing(
+                &db,
+                &r,
+                lock_wait_ms,
+                dispatch_start.elapsed().as_millis(),
+                diagnostic_start.elapsed().as_millis(),
+                &mut value,
+            ) {
+                value["timing_error"] = json!(error);
+            }
             finish(&db, id, &value)?;
             Ok(value)
         }
@@ -678,15 +876,31 @@ fn initialize(state: &Path, db: &Connection, r: &Value) -> R<Value> {
         return Err("invalid_root: source and state must not overlap".into());
     }
     let git = Git::init(&state.join("coordinator.git"))?;
-    let tree = git.capture(&source)?;
-    let commit = git.commit(&tree, &[], "Wipstash initial public import")?;
-    git.set_ref(HEAD, &commit, None)?;
+    let (tree, ignore) = experience::initial_tree(&git, state, &source, r)?;
+    let commit = if let Some(history) = r["public_history"].as_str() {
+        let history = io(Path::new(history).canonicalize())?;
+        let verified = crate::backup::verify_restore(&history)?;
+        let previous = field(&verified, "integration")?.to_owned();
+        let public = Git::open(&history);
+        if public.tree(&previous)? != tree {
+            return Err("initial_history_tree_mismatch".into());
+        }
+        transfer(&public, &git, &previous, HEAD)?;
+        previous
+    } else {
+        let commit = git.commit(&tree, &[], "Wipstash initial public import")?;
+        git.set_ref(HEAD, &commit, None)?;
+        commit
+    };
     sql(db.execute(
         "INSERT INTO meta(key,value) VALUES('authority','local-single-authority-v1')",
         [],
     ))?;
     event(db, "initialized", &json!({"head":commit}))?;
-    Ok(json!({"ok":true,"state":"initialized","head":commit,"evidence":"unchecked"}))
+    validation::schedule_head(state, db, None, &commit)?;
+    Ok(
+        json!({"ok":true,"state":"initialized","head":commit,"evidence":"unchecked","ignore_template":ignore,"available_ignore_templates":experience::templates()["templates"]}),
+    )
 }
 fn open(state: &Path, db: &Connection, r: &Value) -> R<Value> {
     let id = field(r, "workspace")?;
@@ -711,7 +925,7 @@ fn open(state: &Path, db: &Connection, r: &Value) -> R<Value> {
     if path.starts_with(&state_abs) || state_abs.starts_with(&path) {
         return Err("invalid_root: workspace and daemon state overlap".into());
     }
-    if io(fs::read_dir(&path))?.next().is_some() {
+    if r["existing"] != true && io(fs::read_dir(&path))?.next().is_some() {
         return Err("path_collision: workspace must be empty".into());
     }
     let mut stmt = sql(db.prepare("SELECT path FROM workspaces"))?;
@@ -724,32 +938,55 @@ fn open(state: &Path, db: &Connection, r: &Value) -> R<Value> {
     let head = coordinator(state).head(HEAD)?;
     let git = Git::init(&state.join("locals").join(id).join("objects.git"))?;
     transfer(&coordinator(state), &git, &head, HEAD)?;
-    git.materialize(&head, &path)?;
+    if r["existing"] == true {
+        if git.capture(&path)? != git.tree(&head)? {
+            return Err("existing_workspace_differs_from_initial_source".into());
+        }
+    } else {
+        git.materialize(&head, &path)?;
+    }
     sql(db.execute(
         "INSERT INTO workspaces(id,path,base) VALUES(?1,?2,?3)",
         params![id, path.to_string_lossy(), head],
     ))?;
     event(db, "workspace_opened", &json!({"workspace":id,"head":head}))?;
     Ok(
-        json!({"ok":true,"workspace":id,"path":path,"generation":0,"adopted":head,"profile":"cooperative-local","writer_recovery_required":false,"warning":"Unmanaged writers must be stopped; native agent tool interception is not implemented"}),
+        json!({"ok":true,"workspace":id,"path":path,"generation":0,"adopted":head,"profile":"cooperative-local","writer_recovery_required":false,"warning":"Unmanaged writers must be stopped; native agent tool interception is not implemented","coordination":coordination::list(db,None,0,16)?,"startup":"Read incoming work and claim a task before editing. Commit requires task authorization; sharing does not authorize GitHub pushes or deployment."}),
     )
 }
-fn checkpoint(state: &Path, db: &Connection, r: &Value) -> R<Value> {
+fn checkpoint(
+    state: &Path,
+    db: &Connection,
+    r: &Value,
+    prepared: Option<&observation::PreparedCapture>,
+) -> R<Value> {
     let wid = field(r, "workspace")?;
     let w = ws(db, wid)?;
     generation(r, &w)?;
     let id = field(r, "operation_id")?;
     let git = local(state, wid);
-    let tree = git.capture(&w.path)?;
-    let check = git.capture(&w.path)?;
-    if tree != check {
-        return Err("snapshot_unstable: files changed during capture".into());
-    }
+    let tree = if let Some(p) = prepared {
+        if p.workspace != wid
+            || p.path != w.path
+            || p.base != w.base
+            || p.checkpoint != w.checkpoint
+            || p.generation != w.generation
+        {
+            return Err("generation_mismatch: workspace changed during capture; inspect the recorded operation before retrying".into());
+        }
+        p.tree.clone()
+    } else {
+        let tree = observation::capture_tree(state, &git, &w.path, r)?;
+        if r.get("staged_tree").is_none() && tree != git.capture(&w.path)? {
+            return Err("snapshot_unstable: files changed during capture".into());
+        }
+        tree
+    };
     let parent = w.checkpoint.clone().unwrap_or(w.base.clone());
     let commit = git.commit(&tree, &[parent], &format!("private checkpoint {id}"))?;
     git.set_ref(&format!("refs/wipstash/checkpoints/{id}"), &commit, None)?;
     fault("checkpoint_after_pin");
-    let result = json!({"ok":true,"state":"durable","checkpoint":id,"commit":commit,"tree":tree,"adopted":w.base,"generation":w.generation+1,"durability":"local_saved","replication":"not_configured","warning":"Coherent capture requires cooperative writers"});
+    let result = json!({"ok":true,"state":"durable","checkpoint":id,"commit":commit,"tree":tree,"adopted":w.base,"generation":w.generation+1,"durability":"local_saved","replication":"not_configured","hygiene":if let Some(p)=prepared{p.hygiene.clone()}else{experience::hygiene(&git,&tree,&w.path)?},"warning":"Coherent capture requires cooperative writers"});
     sql(db.execute_batch("BEGIN IMMEDIATE"))?;
     sql(db.execute("INSERT OR IGNORE INTO checkpoints(id,workspace,commit_oid,tree,base,generation) VALUES(?1,?2,?3,?4,?5,?6)",params![id,wid,commit,tree,w.base,w.generation+1]))?;
     sql(db.execute(
@@ -774,19 +1011,31 @@ fn publish(state: &Path, db: &Connection, r: &Value) -> R<Value> {
     }
     let _ = ws(db, wid)?;
     let cp = field(r, "checkpoint")?;
-    let id = field(r, "operation_id")?;
     let (tree, base, cp_generation): (String, String, i64) = sql(db.query_row(
         "SELECT tree,base,generation FROM checkpoints WHERE id=?1 AND workspace=?2",
         params![cp, wid],
         |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
     ))
     .map_err(|_| "checkpoint_not_found".to_string())?;
+    publish_snapshot(state, db, r, &tree, &base, cp_generation)
+}
+fn publish_snapshot(
+    state: &Path,
+    db: &Connection,
+    r: &Value,
+    tree: &str,
+    base: &str,
+    cp_generation: i64,
+) -> R<Value> {
+    let wid = field(r, "workspace")?;
+    let cp = field(r, "checkpoint")?;
+    let id = field(r, "operation_id")?;
     let intent = field(r, "intent")?;
     if intent.len() > 4096 {
         return Err("invalid_request: intent too large".into());
     }
     let git = local(state, wid);
-    let commit = publication_commit(&git, id, &tree, &base)?;
+    let commit = publication_commit(&git, id, tree, base)?;
     let online = coordinator(state).repo.exists() && !sync::is_client(db)?;
     if online {
         transfer_publication(
@@ -825,17 +1074,36 @@ fn integrate(state: &Path, db: &Connection, r: &Value) -> R<Value> {
     if !git.repo.exists() {
         return Err("coordinator_unreachable: local coordinator storage unavailable".into());
     }
+    let pending:bool=sql(db.query_row("SELECT EXISTS(SELECT 1 FROM proposals WHERE state IN ('local_queued','coordinator_accepted') AND (?1 IS NULL OR id=?1))",[r["only_proposal"].as_str()],|row|row.get(0)))?;
+    if !pending {
+        let known: Option<String> = sql(db
+            .query_row(
+                "SELECT value FROM meta WHERE key='validation_head'",
+                [],
+                |row| row.get(0),
+            )
+            .optional())?;
+        return Ok(
+            json!({"ok":true,"outcomes":[],"head":known,"head_scope":"last_scheduled_shared_head","evidence":"unchecked"}),
+        );
+    }
     let mut pending = sql(db.prepare(
-        "SELECT id,workspace,commit_oid FROM proposals WHERE state='local_queued' ORDER BY rowid LIMIT ?1",
+        "SELECT id,workspace,commit_oid FROM proposals WHERE state='local_queued' AND (?2 IS NULL OR id=?2) ORDER BY rowid LIMIT ?1",
     ))?;
-    for row in sql(pending.query_map([max_proposals], |r| {
-        Ok((
-            r.get::<_, String>(0)?,
-            r.get::<_, String>(1)?,
-            r.get::<_, String>(2)?,
-        ))
-    }))? {
-        let (id, wid, commit) = sql(row)?;
+    let queued = sql(pending.query_map(
+        params![max_proposals, r["only_proposal"].as_str()],
+        |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+            ))
+        },
+    ))?
+    .collect::<rusqlite::Result<Vec<_>>>()
+    .map_err(|e| e.to_string())?;
+    drop(pending);
+    for (id, wid, commit) in queued {
         transfer_publication(
             &local(state, &wid),
             &git,
@@ -849,16 +1117,23 @@ fn integrate(state: &Path, db: &Connection, r: &Value) -> R<Value> {
         event(db, "published", &json!({"proposal":id,"commit":commit}))?;
     }
     let mut stmt = sql(db.prepare(
-        "SELECT id,commit_oid FROM proposals WHERE state='coordinator_accepted' ORDER BY rowid LIMIT ?1",
+        "SELECT id,commit_oid FROM proposals WHERE state='coordinator_accepted' AND (?2 IS NULL OR id=?2) ORDER BY rowid LIMIT ?1",
     ))?;
-    let rows = sql(stmt.query_map([max_proposals], |r| {
-        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-    }))?;
+    let rows = sql(
+        stmt.query_map(params![max_proposals, r["only_proposal"].as_str()], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        }),
+    )?
+    .collect::<rusqlite::Result<Vec<_>>>()
+    .map_err(|e| e.to_string())?;
+    drop(stmt);
     let mut outcomes = vec![];
     for row in rows {
-        let (id, p) = sql(row)?;
+        let (id, p) = row;
         let head = git.head(HEAD)?;
+        let merge_start = std::time::Instant::now();
         let mut merge = git.merge(&head, &p)?;
+        let merge_ms = merge_start.elapsed().as_millis();
         let policy_text: Option<String> = sql(db
             .query_row("SELECT value FROM meta WHERE key='policy'", [], |row| {
                 row.get(0)
@@ -866,19 +1141,14 @@ fn integrate(state: &Path, db: &Connection, r: &Value) -> R<Value> {
             .optional())?;
         let policy: Value = serde_json::from_str(policy_text.as_deref().unwrap_or("{}"))
             .map_err(|e| e.to_string())?;
-        let evaluation = crate::policy::evaluate(
-            state,
-            &git,
-            &head,
-            &p,
-            &merge.tree,
-            !merge.clean,
-            &merge.conflicts,
-            &policy,
-        ).unwrap_or_else(|error| crate::policy::Evaluation {
+        let mut evaluation = crate::policy::validate_policy(&policy).map(|()| crate::policy::Evaluation {
+            tree: merge.tree.clone(), accepted: merge.clean, repaired: false,
+            details: json!({"head":head,"proposal":p,"input_tree":merge.tree,"candidate_tree":merge.tree,"conflicted":!merge.clean,"conflict_paths":merge.conflicts,"policy_sha256":digest(&policy),"policy":policy,"checks":[],"accepted":merge.clean,"validation_phase":if policy["checks"].as_array().is_some_and(|c|!c.is_empty()){"pending"}else{"unchecked"},"semantic_correctness_claimed":false}),
+        }).unwrap_or_else(|error| crate::policy::Evaluation {
             tree: merge.tree.clone(), accepted: false, repaired: false,
             details: json!({"head":head,"proposal":p,"input_tree":merge.tree,"candidate_tree":merge.tree,"conflicted":!merge.clean,"conflict_paths":merge.conflicts,"policy_sha256":digest(&policy),"checks":[],"accepted":false,"evaluation_error":error,"semantic_correctness_claimed":false}),
         });
+        evaluation.details["merge_duration_ms"] = json!(merge_ms);
         let candidate_id = format!(
             "candidate-{}",
             digest(&json!({"proposal":id,"head":head,"evidence":evaluation.details}))
@@ -887,13 +1157,7 @@ fn integrate(state: &Path, db: &Connection, r: &Value) -> R<Value> {
         merge.tree = evaluation.tree;
         merge.clean = evaluation.accepted;
         merge.details = evaluation.details.to_string();
-        let evidence = if policy["checks"].as_array().is_some_and(|a| !a.is_empty()) {
-            "checks_executed"
-        } else if evaluation.repaired {
-            "agent_resolved_unchecked"
-        } else {
-            "unchecked"
-        };
+        let evidence = "unchecked";
         if !merge.clean {
             sql(db.execute(
                 "UPDATE proposals SET state='quarantined',details=?2 WHERE id=?1",
@@ -916,6 +1180,7 @@ fn integrate(state: &Path, db: &Connection, r: &Value) -> R<Value> {
                 params![id, head, evaluation.details.to_string()],
             ))?;
             event(db, "already_included", &json!({"proposal":id,"head":head}))?;
+            validation::schedule_head(state, db, Some(&id), &head)?;
             outcomes.push(json!({"proposal":id,"state":"already_included","head":head,"evidence":"unchecked",
                 "validation":feedback::validation(Some(&evaluation.details),"already_included",feedback::policy_counts(db).0,Some(&p),false),
                 "next_action":feedback::proposal_action_for_store(db,&id,"already_included",None)}));
@@ -939,6 +1204,7 @@ fn integrate(state: &Path, db: &Connection, r: &Value) -> R<Value> {
             "UPDATE proposals SET state='integrated',head=?2,details=?3 WHERE id=?1",
             params![id, commit, evaluation.details.to_string()],
         ))?;
+        validation::schedule_head(state, db, Some(&id), &commit)?;
         event(
             db,
             "integrated",
@@ -995,6 +1261,11 @@ fn adopt(state: &Path, db: &Connection, r: &Value) -> R<Value> {
         // target may be older than latest, so fetching target alone is insufficient.
         transfer(&shared, &git, &latest, HEAD)?;
     }
+    if let Some((_, head)) = shared_commit::shared_baseline(db, wid, &w.base, w.generation + 1)? {
+        if !git.ancestor(&head, &target).unwrap_or(false) {
+            return Err("stale_head: selected target precedes your acknowledged shared Commit; fetch the corresponding shared history first".into());
+        }
+    }
     let tree = git.capture(&w.path)?;
     if tree != git.capture(&w.path)? {
         return Err("snapshot_unstable".into());
@@ -1006,11 +1277,28 @@ fn adopt(state: &Path, db: &Connection, r: &Value) -> R<Value> {
     )?;
     git.set_ref(&format!("refs/wipstash/recovery/{id}"), &private, None)?;
     // Private history may contain older shared merges; explicit current base is retained by ancestry.
-    let merge = git.merge(&private, &target)?;
+    let merge = shared_commit::adoption_merge(db, wid, &w, &git, &private, &target)?;
     if !merge.clean {
+        let comparison = shared_commit::shared_baseline(db, wid, &w.base, w.generation + 1)?
+            .map(|v| v.0)
+            .unwrap_or(git.tree(&w.base)?);
+        let candidate = conflicts::record(
+            db,
+            &git,
+            conflicts::Capture {
+                operation: id,
+                workspace: wid,
+                origin: "merge",
+                base: &comparison,
+                local: &private,
+                target: &target,
+                merge: &merge,
+                generation: w.generation,
+            },
+        )?;
         sql(db.execute("INSERT OR REPLACE INTO adoption_conflicts(id,workspace,target,base,generation,state) VALUES(?1,?2,?3,?4,?5,'conflict')",params![id,wid,target,w.base,w.generation]))?;
         return Ok(
-            json!({"candidate":id,"ok":false,"state":"conflict","error":{"code":"adoption_conflict","message":"Private edits conflict with target; workspace untouched"},"recovery_commit":private,"target":target,"generation":w.generation}),
+            json!({"candidate":id,"ok":false,"state":"conflict","error":{"code":"adoption_conflict","message":"Private edits conflict with target; workspace untouched"},"recovery_commit":private,"target":target,"generation":w.generation,"conflict":conflicts::describe(db,&candidate,wid)?,"conflict_paths":merge.conflicts,"files_changed":false}),
         );
     }
     let commit = git.commit(
@@ -1065,6 +1353,7 @@ fn status(state: &Path, db: &Connection, r: &Value) -> R<Value> {
         };
         let tasks = resolution::tasks(db, r)?["tasks"].clone();
         let summaries = recent_proposals(db, wid)?;
+        let experience = experience::workspace_state(state, db, wid)?;
         let next = if fenced {
             feedback::action(Some("status"),"Stop and verify unmanaged writers before explicitly acknowledging command_recover.",json!({"workspace":wid}))
         } else if let Some(task) = tasks.as_array().and_then(|a| a.first()) {
@@ -1076,8 +1365,8 @@ fn status(state: &Path, db: &Connection, r: &Value) -> R<Value> {
             );
             action["arguments"]["workspace"] = json!(wid);
             action
-        } else if dirty == Some(true) {
-            feedback::action(None,"Uncheckpointed private WIP is present. Checkpoint it only if explicitly intended; an existing checkpoint can be published without capturing newer WIP. Preserve the caller's exact checkpoint choice.",json!({"workspace":wid}))
+        } else if experience["has_unshared_changes"] == true {
+            feedback::action(None,"Uncommitted local work is present. Commit shares the current source snapshot in one action when sharing this work is authorized. Do not report it shared until the commit result has shared=true.",json!({"workspace":wid}))
         } else if let Some(p) = summaries["proposals"].as_array().and_then(|a| {
             a.iter().find(|p| {
                 matches!(
@@ -1097,6 +1386,10 @@ fn status(state: &Path, db: &Connection, r: &Value) -> R<Value> {
             )
         };
         let mut result = json!({"ok":true,"workspace":wid,"path":w.path,"adopted":w.base,"latest":head,"cached_head":git.head(HEAD).ok(),"coordinator_online":head.is_some() && !sync::is_client(db)?,"remote_contact_unverified":sync::is_client(db)?,"public_store_role":if sync::is_client(db)?{"client_cache"}else{"authority"},"checkpoint_commit":w.checkpoint,"generation":w.generation,"dirty":dirty,"replication":"not_configured","profile":"cooperative-local","writer_recovery_required":fenced,"resolution_tasks":tasks,"next_action":next});
+        for (key, value) in experience.as_object().unwrap() {
+            result[key] = value.clone();
+        }
+        result["coordination"] = coordination::list(db, Some(wid), 0, 16)?;
         for (key, value) in summaries.as_object().unwrap() {
             result[key] = value.clone();
         }
@@ -1176,16 +1469,33 @@ fn proposal_status(db: &Connection, id: &str) -> R<Value> {
     };
     if let Some(observed) = sync::observed_status(db, id)? {
         return Ok(
-            json!({"ok":true,"proposal":id,"state":observed["state"],"local_state":state,"commit":commit,"head":observed["integration_head"],"evidence":observed["evidence"],"remote_observation":observed,"details":null,"resolution_task":task,
-                "validation":feedback::validation(None,observed["state"].as_str().unwrap_or(""),None,Some(&commit),true),
+            json!({"ok":true,"proposal":id,"state":observed["state"],"shared":matches!(observed["state"].as_str(),Some("integrated"|"already_included")),"local_state":state,"commit":commit,"head":observed["integration_head"],"evidence":observed["evidence"],"remote_observation":observed,"details":null,"resolution_task":task,
+                "validation":validation::remote_proposal(db,id)?.unwrap_or_else(||feedback::validation(None,observed["state"].as_str().unwrap_or(""),None,Some(&commit),true)),
                 "next_action":next(observed["state"].as_str().unwrap_or(""))}),
         );
     }
+    let validation = validation::for_proposal(db, id)?.unwrap_or_else(|| {
+        feedback::validation(
+            detail.as_ref(),
+            &state,
+            feedback::policy_counts(db).0,
+            Some(&commit),
+            false,
+        )
+    });
     Ok(
-        json!({"ok":true,"proposal":id,"state":state,"commit":commit,"head":head,"details":detail,"evidence":evidence,"origin":sync::proposal_origin(db,id)?,"resolution_task":task,"resolution":resolution::lineage(db,id)?,
-            "validation":feedback::validation(detail.as_ref(),&state,feedback::policy_counts(db).0,Some(&commit),false),
+        json!({"ok":true,"proposal":id,"state":state,"shared":matches!(state.as_str(),"integrated"|"already_included"),"commit":commit,"head":head,"details":detail,"evidence":if validation["checks_total"].as_u64().unwrap_or(0)>0{"checks_executed"}else{evidence},"origin":sync::proposal_origin(db,id)?,"resolution_task":task,"resolution":resolution::lineage(db,id)?,
+            "validation":validation,
             "next_action":next(&state)}),
     )
+}
+
+pub fn validation_tick(state: &Path) -> R<Value> {
+    validation::tick(state)
+}
+
+pub fn start_validation_worker(state: PathBuf) {
+    validation::start(state);
 }
 fn events(db: &Connection, cursor: i64) -> R<Value> {
     let mut stmt =
@@ -1320,6 +1630,9 @@ fn configure(db: &Connection, r: &Value) -> R<Value> {
     if !policy.is_object() {
         return Err("invalid_request: policy must be an object".into());
     }
+    if policy.get("repair").is_some_and(|v| !v.is_null()) {
+        return Err("invalid_request: automatic repair commands are retired; use the assigned repair owner and a normal Commit".into());
+    }
     crate::policy::validate_policy(&policy)?;
     sql(db.execute("INSERT INTO meta(key,value) VALUES('policy',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[policy.to_string()]))?;
     event(
@@ -1337,7 +1650,6 @@ fn resolve_adoption(state: &Path, db: &Connection, r: &Value) -> R<Value> {
     generation(r, &w)?;
     let candidate = field(r, "candidate")?;
     let target = field(r, "target")?;
-    let cp = field(r, "checkpoint")?;
     let id = field(r, "operation_id")?;
     let (cwid, ctarget, base, g, phase): (String, String, String, i64, String) = sql(db
         .query_row(
@@ -1356,31 +1668,49 @@ fn resolve_adoption(state: &Path, db: &Connection, r: &Value) -> R<Value> {
     if cwid != wid
         || ctarget != target
         || base != w.base
-        || g + 1 != w.generation
+        || (if r.get("checkpoint").is_some() {
+            g + 1
+        } else {
+            g
+        }) != w.generation
         || phase != "conflict"
     {
         return Err(
             "stale_adoption_candidate: target, base, or workspace generation changed".into(),
         );
     }
-    let (commit, tree): (String, String) = sql(db.query_row(
-        "SELECT commit_oid,tree FROM checkpoints WHERE id=?1 AND workspace=?2",
-        params![cp, wid],
-        |row| Ok((row.get(0)?, row.get(1)?)),
-    ))?;
     let git = local(state, wid);
-    if w.checkpoint.as_deref() != Some(&commit) || git.capture(&w.path)? != tree {
-        return Err(
-            "stale_adoption_candidate: selected resolution differs from live workspace".into(),
-        );
+    if let Some((tree, _)) = conflicts::review_tree(state, db, r)? {
+        return conflicts::apply(state, db, r, &w, &git, &tree);
     }
+    let (commit, tree) = if let Some(cp) = r.get("checkpoint").and_then(Value::as_str) {
+        let (commit, tree): (String, String) = sql(db.query_row(
+            "SELECT commit_oid,tree FROM checkpoints WHERE id=?1 AND workspace=?2",
+            params![cp, wid],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        ))?;
+        if w.checkpoint.as_deref() != Some(&commit) || git.capture(&w.path)? != tree {
+            return Err(
+                "stale_adoption_candidate: selected resolution differs from live workspace".into(),
+            );
+        }
+        (commit, tree)
+    } else {
+        let tree = git.capture(&w.path)?;
+        if git.capture(&w.path)? != tree {
+            return Err("snapshot_unstable: files changed during adoption resolution".into());
+        }
+        let parent = w.checkpoint.clone().unwrap_or(w.base.clone());
+        let commit = git.commit(&tree, &[parent], &format!("adoption resolution {id}"))?;
+        (commit, tree)
+    };
     let resolved = git.commit(
         &tree,
         &[commit, target.to_string()],
         &format!("explicit adoption resolution {id} candidate {candidate}"),
     )?;
     git.set_ref(&format!("refs/wipstash/adoptions/{id}"), &resolved, None)?;
-    let result = json!({"ok":true,"state":"committed","adopted":target,"commit":resolved,"tree":tree,"generation":w.generation+1,"resolution":"explicit_checkpoint","candidate":candidate,"durability":"local_saved"});
+    let result = json!({"ok":true,"state":"committed","adopted":target,"commit":resolved,"tree":tree,"generation":w.generation+1,"resolution":if r.get("checkpoint").is_some(){"explicit_checkpoint"}else{"explicit_live_resolution"},"candidate":candidate,"durability":"local_saved"});
     sql(db.execute_batch("BEGIN IMMEDIATE"))?;
     sql(db.execute(
         "UPDATE workspaces SET base=?2,checkpoint=?3,generation=generation+1 WHERE id=?1",
@@ -1390,6 +1720,7 @@ fn resolve_adoption(state: &Path, db: &Connection, r: &Value) -> R<Value> {
         "UPDATE adoption_conflicts SET state='resolved' WHERE id=?1",
         [candidate],
     ))?;
+    conflicts::complete(db, candidate)?;
     finish(db, id, &result)?;
     event(
         db,
@@ -2038,7 +2369,7 @@ mod regression_tests {
         assert!(status["next_action"]["reason"]
             .as_str()
             .unwrap()
-            .contains("Preserve the caller's exact checkpoint choice"));
+            .contains("Commit shares the current source snapshot"));
         assert!(status["next_action"]["arguments"]
             .get("expected_generation")
             .is_none());
@@ -2120,7 +2451,10 @@ mod regression_tests {
         assert_eq!(submitted["checks_configured"], 0);
         assert_eq!(submitted["validation"]["state"], "unchecked");
         assert_eq!(submitted["next_action"]["op"], "proposal_status");
-        assert_eq!(submitted["next_action"]["reason"], "Proposal is queued. Observe its result; integration and adoption are separate actions.");
+        assert!(submitted["next_action"]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("queued for automatic integration"));
     }
 
     #[test]
@@ -2202,7 +2536,7 @@ mod regression_tests {
         assert_eq!(recovered["state"], "integrated");
         assert_eq!(recovered["head"], new);
         assert_eq!(recovered["details"], Value::Null);
-        assert_eq!(recovered["validation"]["state"], "unchecked");
+        assert_eq!(recovered["validation"]["state"], "pending");
         assert_eq!(recovered["checks_configured"], 1);
         assert_eq!(fs::read_to_string(p.0.join("B/a")).unwrap(), "original");
     }
@@ -2413,7 +2747,7 @@ mod regression_tests {
             fs::read_to_string(p.0.join("B/private")).unwrap(),
             "private WIP"
         );
-        let current = PathBuf::from(opened["side_paths"]["current"].as_str().unwrap());
+        let current = PathBuf::from(opened["side_paths"]["shared"].as_str().unwrap());
         assert_eq!(fs::read_to_string(current.join("a")).unwrap(), "current\n");
         assert!(fs::read_to_string(p.0.join("fix/a"))
             .unwrap()

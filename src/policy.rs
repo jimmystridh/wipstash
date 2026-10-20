@@ -100,6 +100,52 @@ fn fingerprint(root: &Path) -> Result<String, String> {
     walk(root, root, &mut h)?;
     Ok(format!("{:x}", h.finalize()))
 }
+
+fn file_manifest(root: &Path) -> Result<std::collections::BTreeMap<String, String>, String> {
+    let mut map = std::collections::BTreeMap::new();
+    let mut dirs = vec![root.to_owned()];
+    while let Some(dir) = dirs.pop() {
+        for item in fs::read_dir(dir).map_err(error)? {
+            let path = item.map_err(error)?.path();
+            let meta = fs::symlink_metadata(&path).map_err(error)?;
+            let name = path
+                .strip_prefix(root)
+                .map_err(error)?
+                .to_string_lossy()
+                .into_owned();
+            if map.len() >= 20_000 {
+                return Err("check manifest exceeds 20000 paths".into());
+            }
+            let mut h = Sha256::new();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                h.update(meta.permissions().mode().to_be_bytes());
+            }
+            if meta.file_type().is_symlink() {
+                h.update(b"symlink");
+            } else if meta.is_dir() {
+                h.update(b"dir");
+                dirs.push(path.clone());
+            } else if meta.is_file() {
+                h.update(b"file");
+                let mut file = fs::File::open(&path).map_err(error)?;
+                let mut buf = [0; 8192];
+                loop {
+                    let n = file.read(&mut buf).map_err(error)?;
+                    if n == 0 {
+                        break;
+                    }
+                    h.update(&buf[..n]);
+                }
+            } else {
+                h.update(b"special");
+            }
+            map.insert(name, format!("{:x}", h.finalize()));
+        }
+    }
+    Ok(map)
+}
 fn argv(spec: &Value) -> Result<Vec<String>, String> {
     let a = spec
         .get("argv")
@@ -133,6 +179,12 @@ pub fn validate_command(spec: &Value) -> Result<(), String> {
         return Err("policy executable cannot be empty".into());
     }
     timeout(spec)?;
+    if spec
+        .get("preset")
+        .is_some_and(|v| v.as_str() != Some("python"))
+    {
+        return Err("unknown check preset; supported: python".into());
+    }
     Ok(())
 }
 pub fn validate_policy(policy: &Value) -> Result<(), String> {
@@ -158,12 +210,12 @@ pub fn validate_policy(policy: &Value) -> Result<(), String> {
             if check.get("required").is_some_and(|v| !v.is_boolean()) {
                 return Err("required must be boolean".into());
             }
-            if check
-                .as_object()
-                .unwrap()
-                .keys()
-                .any(|key| !matches!(key.as_str(), "id" | "argv" | "timeout_seconds" | "required"))
-            {
+            if check.as_object().unwrap().keys().any(|key| {
+                !matches!(
+                    key.as_str(),
+                    "id" | "argv" | "timeout_seconds" | "required" | "preset"
+                )
+            }) {
                 return Err("unknown check field".into());
             }
         }
@@ -245,7 +297,7 @@ fn reserve_repair(
     tx.commit().map_err(error)?;
     Ok(Some(used + 1))
 }
-fn collect(mut pipe: impl Read) -> (String, u64, bool) {
+fn collect(mut pipe: impl Read) -> (String, u64, bool, String) {
     let mut kept = Vec::new();
     let mut total = 0u64;
     let mut buf = [0u8; 8192];
@@ -264,7 +316,12 @@ fn collect(mut pipe: impl Read) -> (String, u64, bool) {
             }
         }
     }
-    (hash(&kept), total, read_ok)
+    (
+        hash(&kept),
+        total,
+        read_ok,
+        String::from_utf8_lossy(&kept).into_owned(),
+    )
 }
 /// Resolve only the explicit trusted runtime path; never inherit a caller PATH.
 fn command_executable(argument: &str, cwd: &Path) -> Result<PathBuf, String> {
@@ -309,12 +366,13 @@ fn run_with_conflicts(
     deadline: Instant,
     conflicts: Option<&[String]>,
 ) -> Result<Value, String> {
+    let started = Instant::now();
     validate_command(spec)?;
     let args = argv(spec)?;
     let seconds = timeout(spec)?;
     if Instant::now() >= deadline {
         return Ok(
-            json!({"success":false,"timed_out":true,"reason":"evaluation_budget_exhausted"}),
+            json!({"success":false,"timed_out":true,"duration_ms":0,"failure_kind":"infrastructure","reason":"evaluation_budget_exhausted"}),
         );
     }
     let cwd = fs::canonicalize(cwd).map_err(error)?;
@@ -327,6 +385,9 @@ fn run_with_conflicts(
         ("WIPSTASH_PROPOSAL".into(), proposal.into()),
         ("WIPSTASH_CANDIDATE_TREE".into(), tree.into()),
     ];
+    if spec["preset"] == "python" {
+        environment.push(("PYTHONDONTWRITEBYTECODE".into(), "1".into()));
+    }
     #[cfg(unix)]
     environment.push(("PATH".into(), "/usr/bin:/bin".into()));
     #[cfg(windows)]
@@ -365,7 +426,7 @@ fn run_with_conflicts(
         Ok(c) => c,
         Err(e) => {
             return Ok(json!({"success":false,"spawn_error":e.to_string(),
-                "argv_hash":hash(&serde_json::to_vec(&args).map_err(error)?)}))
+                "duration_ms":started.elapsed().as_millis(),"argv_hash":hash(&serde_json::to_vec(&args).map_err(error)?)}))
         }
     };
     let (out, err) = child.take_output().ok_or("missing output pipes")?;
@@ -392,12 +453,12 @@ fn run_with_conflicts(
     // Do not wait indefinitely if an unsandboxed worker escapes its process group.
     let stdout = out_rx
         .recv_timeout(Duration::from_millis(200))
-        .unwrap_or_else(|_| (hash(b""), 0, false));
+        .unwrap_or_else(|_| (hash(b""), 0, false, String::new()));
     let stderr = err_rx
         .recv_timeout(Duration::from_millis(200))
-        .unwrap_or_else(|_| (hash(b""), 0, false));
+        .unwrap_or_else(|_| (hash(b""), 0, false, String::new()));
     Ok(
-        json!({"success":exit_code == Some(0)&&!timed_out&&stdout.2&&stderr.2,"exit_code":exit_code,"process_drain":drain,"execution_is_os_sandboxed":false,"timed_out":timed_out,"argv_hash":hash(&serde_json::to_vec(&args).map_err(error)?),"stdout_prefix_sha256":stdout.0,"stderr_prefix_sha256":stderr.0,"stdout_bytes":stdout.1,"stderr_bytes":stderr.1,"output_collection_complete":stdout.2&&stderr.2,"output_truncated":stdout.1>OUTPUT_LIMIT as u64||stderr.1>OUTPUT_LIMIT as u64,"retained_output_limit_bytes":16384}),
+        json!({"success":exit_code == Some(0)&&!timed_out&&stdout.2&&stderr.2,"exit_code":exit_code,"process_drain":drain,"execution_is_os_sandboxed":false,"timed_out":timed_out,"duration_ms":started.elapsed().as_millis(),"argv_hash":hash(&serde_json::to_vec(&args).map_err(error)?),"stdout_prefix_sha256":stdout.0,"stderr_prefix_sha256":stderr.0,"stdout_bytes":stdout.1,"stderr_bytes":stderr.1,"stdout_prefix":stdout.3,"stderr_prefix":stderr.3,"output_collection_complete":stdout.2&&stderr.2,"output_truncated":stdout.1>OUTPUT_LIMIT as u64||stderr.1>OUTPUT_LIMIT as u64,"retained_output_limit_bytes":16384}),
     )
 }
 /// Only this boundary may choose the explicitly unsafe development profile.
@@ -673,8 +734,10 @@ pub fn evaluate(
         for check in checks {
             let dir = checkout(state, git, &current)?;
             let before = fingerprint(&dir.0)?;
+            let before_files = file_manifest(&dir.0)?;
             let mut record = run(check, &dir.0, head, proposal, &current, deadline)?;
             let after = fingerprint(&dir.0);
+            let after_files = file_manifest(&dir.0);
             let unchanged = after.as_ref().is_ok_and(|s| s == &before);
             let captured = git.capture(&dir.0);
             let exact = captured.as_ref().is_ok_and(|s| s == &current);
@@ -686,6 +749,30 @@ pub fn evaluate(
             record["required"] = json!(required);
             record["candidate_tree"] = json!(current);
             record["checkout_unchanged"] = json!(unchanged && exact);
+            if let Ok(after_files) = after_files {
+                let paths: std::collections::BTreeSet<_> =
+                    before_files.keys().chain(after_files.keys()).collect();
+                let mutations:Vec<_>=paths.into_iter().filter(|p|before_files.get(*p)!=after_files.get(*p)).map(|p|json!({"path":p,"kind":if !before_files.contains_key(p){"added"}else if !after_files.contains_key(p){"deleted"}else{"modified"}})).collect();
+                record["mutated_paths"] = json!(mutations.iter().take(100).collect::<Vec<_>>());
+                record["mutated_paths_total"] = json!(mutations.len());
+                record["mutated_paths_truncated"] = json!(mutations.len() > 100);
+            } else {
+                record["mutation_inspection_error"] = json!(after_files.err());
+            }
+            record["failure_kind"] = json!(if record["reason"] == "evaluation_budget_exhausted"
+                || record["spawn_error"].is_string()
+                || record["output_collection_complete"] == false
+            {
+                Some("infrastructure")
+            } else if !unchanged || !exact {
+                Some("check_mutated_checkout")
+            } else if record["timed_out"] == true {
+                Some("timeout")
+            } else if record["success"] != true {
+                Some("test_failure")
+            } else {
+                None
+            });
             record["before_sha256"] = json!(before);
             record["after_sha256"] = json!(after.ok());
             if !unchanged || !exact || (required && record["success"] != true) {
@@ -974,6 +1061,13 @@ mod tests {
         assert_eq!(e.details["checks"][0]["stdout_bytes"], 20000);
         assert_eq!(e.details["checks"][0]["output_truncated"], true);
         assert!(e.details["checks"][0].get("stdout").is_none());
+        assert!(
+            e.details["checks"][0]["stdout_prefix"]
+                .as_str()
+                .unwrap()
+                .len()
+                <= OUTPUT_LIMIT
+        );
     }
     #[test]
     fn timeout_is_failure() {
@@ -990,7 +1084,8 @@ mod command_contract_tests {
     #[test]
     fn capture_hashes_only_bounded_prefix() {
         let bytes = vec![b'x'; OUTPUT_LIMIT + 4096];
-        let (digest, total, complete) = collect(std::io::Cursor::new(&bytes));
+        let (digest, total, complete, prefix) = collect(std::io::Cursor::new(&bytes));
+        assert!(prefix.len() <= OUTPUT_LIMIT * 3);
         assert_eq!(digest, hash(&bytes[..OUTPUT_LIMIT]));
         assert_eq!(total, bytes.len() as u64);
         assert!(complete);
@@ -1008,6 +1103,7 @@ mod command_contract_tests {
         .unwrap();
         assert_eq!(record["success"], false);
         assert_eq!(record["reason"], "evaluation_budget_exhausted");
+        assert_eq!(record["failure_kind"], "infrastructure");
     }
     #[cfg(unix)]
     #[test]

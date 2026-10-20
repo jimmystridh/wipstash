@@ -16,11 +16,23 @@ use std::{
 pub type Reply<'a> = Pin<Box<dyn Future<Output = Result<Value>> + Send + 'a>>;
 /// Each implementation must authenticate its peer and import through the engine verifier.
 pub trait PeerSync: Send + Sync {
+    fn flush_coordination(&self) -> Reply<'_> {
+        Box::pin(async { Ok(json!({"ok":true,"available":false})) })
+    }
+    fn flush_audit(&self) -> Reply<'_> {
+        Box::pin(async { Ok(json!({"ok":true,"available":false})) })
+    }
     fn upload<'a>(&'a self, proposal: &'a str, operation: &'a str) -> Reply<'a>;
     fn catch_up(&self) -> Reply<'_>;
     fn current_receipt<'a>(&'a self, proposal: &'a str) -> Reply<'a>;
 }
 impl PeerSync for Workstation {
+    fn flush_coordination(&self) -> Reply<'_> {
+        Box::pin(self.flush_coordination())
+    }
+    fn flush_audit(&self) -> Reply<'_> {
+        Box::pin(self.flush_audit())
+    }
     fn upload<'a>(&'a self, proposal: &'a str, operation: &'a str) -> Reply<'a> {
         Box::pin(self.upload(proposal, operation))
     }
@@ -48,6 +60,14 @@ struct Journal {
     entries: BTreeMap<String, Entry>,
     catch_up_failures: u32,
     catch_up_after: u64,
+    #[serde(default)]
+    audit_failures: u32,
+    #[serde(default)]
+    audit_after: u64,
+    #[serde(default)]
+    coordination_failures: u32,
+    #[serde(default)]
+    coordination_after: u64,
 }
 fn backoff(failures: u32) -> u64 {
     2u64.saturating_pow(failures.min(8)).min(300)
@@ -72,6 +92,22 @@ pub struct Worker<T> {
     _lock: File,
 }
 impl<T: PeerSync> Worker<T> {
+    /// One explicit CLI invocation, ignoring historical background retry delays.
+    pub async fn once(&mut self) -> Result<Value> {
+        self.journal.coordination_after = 0;
+        self.journal.audit_after = 0;
+        self.journal.catch_up_after = 0;
+        for entry in self.journal.entries.values_mut() {
+            if !entry.terminal && entry.blocked.is_none() {
+                entry.next_attempt = 0;
+            }
+        }
+        self.save()?;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_secs();
+        self.tick(now).await
+    }
     pub async fn open(engine: PathBuf, state: PathBuf, transport: T) -> Result<Self> {
         if !engine.is_absolute() || !state.is_absolute() {
             return Err(error("absolute_config_paths_required"));
@@ -137,6 +173,39 @@ impl<T: PeerSync> Worker<T> {
     /// One bounded pass. Failures on one proposal do not prevent unrelated proposals or heads.
     /// `now` is Unix seconds, injectable for deterministic retry tests.
     pub async fn tick(&mut self, now: u64) -> Result<Value> {
+        let mut coordination_status = json!({"ok":false,"pending":true});
+        if now >= self.journal.coordination_after {
+            match self.transport.flush_coordination().await {
+                Ok(value) => {
+                    coordination_status = value;
+                    self.journal.coordination_failures = 0;
+                    self.journal.coordination_after = now.saturating_add(5);
+                }
+                Err(_) => {
+                    self.journal.coordination_failures =
+                        self.journal.coordination_failures.saturating_add(1);
+                    self.journal.coordination_after =
+                        now.saturating_add(backoff(self.journal.coordination_failures));
+                }
+            }
+            self.save()?;
+        }
+        let mut audit_status = json!({"ok":false,"pending":true});
+        if now >= self.journal.audit_after {
+            match self.transport.flush_audit().await {
+                Ok(status) => {
+                    audit_status = status;
+                    self.journal.audit_failures = 0;
+                    self.journal.audit_after = now.saturating_add(5);
+                }
+                Err(_) => {
+                    self.journal.audit_failures = self.journal.audit_failures.saturating_add(1);
+                    self.journal.audit_after =
+                        now.saturating_add(backoff(self.journal.audit_failures));
+                }
+            }
+            self.save()?;
+        }
         let mut after = 0;
         loop {
             let page = run_engine(
@@ -224,6 +293,7 @@ impl<T: PeerSync> Worker<T> {
                 }
                 Ok(v)
             });
+            let mut newly_uploaded = None;
             let entry = self.journal.entries.get_mut(&id).unwrap();
             match result {
                 Ok(v) if v["ok"] == true => {
@@ -236,6 +306,7 @@ impl<T: PeerSync> Worker<T> {
                             return Err(error("upload_ack_identity"));
                         }
                         entry.authority_proposal = Some(remote.into());
+                        newly_uploaded = Some(remote.to_owned());
                     } else {
                         entry.terminal = matches!(
                             v["remote_observation"]["state"].as_str(),
@@ -272,6 +343,17 @@ impl<T: PeerSync> Worker<T> {
                 }
             }
             self.save()?;
+            if let Some(remote) = newly_uploaded {
+                if let Ok(receipt) = self.transport.current_receipt(&remote).await {
+                    if receipt["ok"] == true && receipt["proposal"] == id {
+                        self.journal.entries.get_mut(&id).unwrap().terminal = matches!(
+                            receipt["remote_observation"]["state"].as_str(),
+                            Some("integrated" | "already_included" | "cancelled" | "superseded")
+                        );
+                        self.save()?;
+                    }
+                }
+            }
         }
         if now >= self.journal.catch_up_after {
             if self.transport.catch_up().await.is_ok() {
@@ -287,7 +369,7 @@ impl<T: PeerSync> Worker<T> {
         }
         let status = run_engine(&self.engine, &self.state, json!({"op":"sync_status"})).await?;
         Ok(
-            json!({"ok":true,"failures":failures,"tracked":self.journal.entries.len(),"files_changed":false,"resolution_tasks":status["resolution_tasks"],"resolution_tasks_truncated":status["resolution_tasks_truncated"]}),
+            json!({"ok":true,"failures":failures,"tracked":self.journal.entries.len(),"audit":audit_status,"audit_failures":self.journal.audit_failures,"coordination":coordination_status,"coordination_failures":self.journal.coordination_failures,"files_changed":false,"resolution_tasks":status["resolution_tasks"],"resolution_tasks_truncated":status["resolution_tasks_truncated"]}),
         )
     }
     pub async fn run(&mut self) -> Result<()> {
@@ -414,6 +496,29 @@ impl AuthorityWorker {
         }
     }
     pub async fn run(&mut self) -> Result<()> {
+        let engine = self.engine.clone();
+        let state = self.state.clone();
+        let validation = async move {
+            loop {
+                if let Err(e) = crate::run_engine_with_timeout(
+                    &engine,
+                    &state,
+                    json!({"op":"validation_tick"}),
+                    Duration::from_secs(660),
+                )
+                .await
+                {
+                    eprintln!("authority validation paused: {e}");
+                }
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+        };
+        tokio::select! {
+            result=self.run_promotions()=>result,
+            ()=validation=>Ok(()),
+        }
+    }
+    async fn run_promotions(&mut self) -> Result<()> {
         let mut failures: u32 = 0;
         loop {
             let delay = match self.tick().await {

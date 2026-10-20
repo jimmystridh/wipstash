@@ -222,24 +222,98 @@ fn validate(objects: &BTreeMap<String, Object>, root_ids: &[String]) -> Result<(
 /// Export only caller-authorized public roots, with their exact complete closure.
 pub fn export(git: &Git, input: &[String]) -> Result<Vec<u8>> {
     let root_ids = roots(input)?;
-    let mut pending: Vec<_> = root_ids.iter().map(|s| (s.clone(), 1)).collect();
-    let mut objects = BTreeMap::new();
+    let mut enumeration = vec!["rev-list", "--objects", "--no-object-names"];
+    enumeration.extend(root_ids.iter().map(String::as_str));
+    enumeration.push("--");
+    let listed = git.run(&enumeration, None)?;
+    let listed = std::str::from_utf8(&listed).map_err(|_| "source_invalid: object list")?;
+    let ids = listed.lines().collect::<BTreeSet<_>>();
+    if ids.is_empty() || ids.len() > MAX_OBJECTS {
+        return Err("source_limit: object count".into());
+    }
+    for oid in &ids {
+        id(oid)?;
+    }
+    let request = ids.iter().copied().collect::<Vec<_>>().join("\n") + "\n";
+    let checked = git.run(&["cat-file", "--batch-check"], Some(request.as_bytes()))?;
+    let checked = std::str::from_utf8(&checked).map_err(|_| "source_invalid: object metadata")?;
+    let mut metadata = Vec::new();
     let mut size = MAGIC.len() + 8 + root_ids.len() * 40;
-    while let Some((oid, k)) = pending.pop() {
-        if objects.contains_key(&oid) {
-            continue;
+    if checked.lines().count() != ids.len() {
+        return Err("source_invalid: object metadata".into());
+    }
+    for (expected, line) in ids.iter().zip(checked.lines()) {
+        let fields = line.split_whitespace().collect::<Vec<_>>();
+        if fields.len() != 3 || fields[0] != *expected {
+            return Err("source_invalid: missing object".into());
         }
-        let bytes = git.verified_object(kind(k)?, &oid)?;
+        let (k, limit) = match fields[1] {
+            "commit" => (1, 16 * 1024),
+            "tree" => (2, 4 * 1024 * 1024),
+            "blob" => (3, 16 * 1024 * 1024),
+            _ => return Err("source_invalid: object type".into()),
+        };
+        let bytes = fields[2]
+            .parse::<usize>()
+            .map_err(|_| "source_invalid: object size")?;
         size = size
-            .checked_add(45 + bytes.len())
+            .checked_add(45)
+            .and_then(|s| s.checked_add(bytes))
             .ok_or("source_limit: size overflow")?;
-        if size > MAX_ARTIFACT_BYTES || objects.len() >= MAX_OBJECTS {
+        if bytes > limit || size > MAX_ARTIFACT_BYTES {
             return Err("source_limit: artifact exceeds bound".into());
         }
-        let o = Object { kind: k, bytes };
-        pending.extend(links(&o)?);
-        objects.insert(oid, o);
+        metadata.push(((*expected).to_owned(), k, bytes));
     }
+    let mut objects = BTreeMap::new();
+    let mut offset = 0;
+    while offset < metadata.len() {
+        let begin = offset;
+        let mut bytes = 0usize;
+        while offset < metadata.len()
+            && (offset == begin || bytes + metadata[offset].2 <= 16 * 1024 * 1024)
+        {
+            bytes += metadata[offset].2;
+            offset += 1;
+        }
+        let part = &metadata[begin..offset];
+        let input = part
+            .iter()
+            .map(|(oid, _, _)| oid.as_str())
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        let output = git.run(&["cat-file", "--batch"], Some(input.as_bytes()))?;
+        let mut cursor = Cursor(&output);
+        for (oid, k, bytes) in part {
+            let header = format!("{oid} {} {bytes}\n", kind(*k)?);
+            if cursor.take(header.len())? != header.as_bytes() {
+                return Err("source_invalid: object changed during export".into());
+            }
+            let body = cursor.take(*bytes)?.to_vec();
+            if cursor.take(1)? != b"\n" {
+                return Err("source_invalid: object framing".into());
+            }
+            objects.insert(
+                oid.clone(),
+                Object {
+                    kind: *k,
+                    bytes: body,
+                },
+            );
+        }
+        if !cursor.0.is_empty() {
+            return Err("source_invalid: trailing object data".into());
+        }
+    }
+    let inputs = git.repo.join(format!(
+        "wipstash-export-inputs-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    fs::create_dir(&inputs).map_err(|e| e.to_string())?;
+    let _inputs = Quarantine(inputs.clone());
+    hash_objects(git, &objects, &inputs, false)?;
     validate(&objects, &root_ids)?;
     let private = git.run(
         &[
@@ -314,7 +388,6 @@ pub fn import(git: &Git, bytes: &[u8], expected_roots: &[String]) -> Result<()> 
 pub struct Prepared {
     quarantine: Quarantine,
     git: Git,
-    objects: BTreeMap<String, Object>,
     manifest: Vec<String>,
 }
 impl Prepared {
@@ -323,7 +396,21 @@ impl Prepared {
     }
     pub fn install(self, git: &Git) -> Result<()> {
         let _keep_quarantine_alive = &self.quarantine;
-        install(git, &self.objects, &self.manifest)
+        let roots = self.manifest.iter().map(String::as_str).collect::<Vec<_>>();
+        git.run_local_repository(
+            &[
+                "fetch",
+                "--no-tags",
+                "--no-write-fetch-head",
+                "--recurse-submodules=no",
+            ],
+            &self.git.repo,
+            &roots,
+        )?;
+        let mut verify = vec!["fsck", "--strict", "--no-reflogs", "--no-dangling"];
+        verify.extend(roots);
+        git.run(&verify, None)?;
+        pin_roots(git, &self.manifest)
     }
 }
 
@@ -398,52 +485,65 @@ pub fn prepare(git: &Git, bytes: &[u8], expected_roots: &[String]) -> Result<Pre
     fs::create_dir(&qpath).map_err(|e| e.to_string())?;
     let guard = Quarantine(qpath.clone());
     let q = Git::init(&qpath)?;
-    for (oid, o) in &objects {
-        let actual = q.run(
-            &[
-                "hash-object",
-                "-w",
-                "-t",
-                kind(o.kind)?,
-                "--stdin",
-                "--no-filters",
-            ],
-            Some(&o.bytes),
-        )?;
-        if actual != format!("{oid}\n").as_bytes() {
-            return Err("source_invalid: object identity mismatch".into());
-        }
-    }
+    let inputs = qpath.join("object-inputs");
+    fs::create_dir(&inputs).map_err(|e| e.to_string())?;
+    hash_objects(&q, &objects, &inputs, true)?;
     let mut args = vec!["fsck", "--strict", "--no-reflogs", "--no-dangling"];
     args.extend(manifest.iter().map(String::as_str));
     q.run(&args, None)?;
     Ok(Prepared {
         quarantine: guard,
         git: q,
-        objects,
         manifest,
     })
 }
-fn install(git: &Git, objects: &BTreeMap<String, Object>, manifest: &[String]) -> Result<()> {
-    // Install only after all objects, connectivity, public ancestry and trees passed.
-    for (oid, o) in objects {
-        let actual = git.run(
-            &[
-                "hash-object",
-                "-w",
-                "-t",
-                kind(o.kind)?,
-                "--stdin",
-                "--no-filters",
-            ],
-            Some(&o.bytes),
-        )?;
-        if actual != format!("{oid}\n").as_bytes() {
-            return Err("source_invalid: destination object format".into());
-        }
-        // hash-object can reuse an existing loose object; verify it was not corrupt.
-        git.verified_object(kind(o.kind)?, oid)?;
+fn hash_objects(
+    git: &Git,
+    objects: &BTreeMap<String, Object>,
+    inputs: &std::path::Path,
+    write: bool,
+) -> Result<()> {
+    let required = objects.values().try_fold(1024 * 1024u64, |total, object| {
+        total
+            .checked_add(object.bytes.len() as u64 + 8192)
+            .ok_or("source_limit: capacity overflow")
+    })?;
+    if fs2::available_space(&git.repo).map_err(|e| format!("storage_capacity_error: {e}"))?
+        < required
+    {
+        return Err("insufficient_storage: source hashing reserve".into());
     }
+    for (oid, object) in objects {
+        fs::write(inputs.join(oid), &object.bytes).map_err(|e| e.to_string())?;
+    }
+    for object_kind in [1, 2, 3] {
+        let ids = objects
+            .iter()
+            .filter(|(_, object)| object.kind == object_kind)
+            .map(|(oid, _)| oid.as_str())
+            .collect::<Vec<_>>();
+        if ids.is_empty() {
+            continue;
+        }
+        let expected = ids.join("\n") + "\n";
+        let mut arguments = vec![
+            "hash-object",
+            "--stdin-paths",
+            "-t",
+            kind(object_kind)?,
+            "--no-filters",
+        ];
+        if write {
+            arguments.push("-w");
+        }
+        let actual = git.run_in(inputs, &arguments, Some(expected.as_bytes()))?;
+        if actual != expected.as_bytes() {
+            return Err("source_invalid: object identity mismatch".into());
+        }
+    }
+    Ok(())
+}
+fn pin_roots(git: &Git, manifest: &[String]) -> Result<()> {
     let mut transaction = String::from("start\n");
     for oid in manifest {
         transaction.push_str(&format!("update refs/wipstash/transfers/{oid} {oid}\n"));
@@ -511,6 +611,34 @@ mod tests {
             .file_name()
             .to_string_lossy()
             .contains("quarantine")));
+    }
+    #[cfg(unix)]
+    #[test]
+    fn batched_install_rejects_corrupt_existing_destination_objects_before_pinning() {
+        use std::os::unix::fs::PermissionsExt;
+        let (_temporary, source, destination, root) = fixture();
+        let artifact = export(&source, std::slice::from_ref(&root)).unwrap();
+        let bytes = b"hello\0\xff\r\n";
+        let blob = String::from_utf8(
+            destination
+                .run(
+                    &["hash-object", "-w", "--stdin", "--no-filters"],
+                    Some(bytes),
+                )
+                .unwrap(),
+        )
+        .unwrap()
+        .trim()
+        .to_owned();
+        let object_path = destination
+            .repo
+            .join("objects")
+            .join(&blob[..2])
+            .join(&blob[2..]);
+        fs::set_permissions(&object_path, fs::Permissions::from_mode(0o600)).unwrap();
+        fs::write(object_path, b"corrupt loose object").unwrap();
+        assert!(import(&destination, &artifact, std::slice::from_ref(&root)).is_err());
+        no_pins(&destination);
     }
     #[test]
     fn fails_closed_on_private_ancestry_and_private_pins() {

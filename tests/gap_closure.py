@@ -77,7 +77,7 @@ class Gaps(unittest.TestCase):
         self.req(op='integrate'); self.assertFalse(marker.exists()); self.assertEqual('quarantined',self.req(op='proposal_status',proposal=b['proposal'])['state'])
     def test_restore_retains_queue_history_without_eligibility(self):
         write(self.paths['A'],'docs/pending.txt','pending public bytes\n'); p=self.pub('A')
-        policy={'checks':[{'id':'restored-required-check','argv':['/bin/true'],'timeout_seconds':2}]}
+        policy={'checks':[{'id':'restored-required-check','argv':[sys.executable,'-c','pass'],'timeout_seconds':2}]}
         self.req(op='configure',policy=policy)
         remote=self.h.root/'backup.git'; self.h.command(['git','init','--bare',str(remote)])
         self.req(op='backup_flush',destination=str(remote))
@@ -105,7 +105,7 @@ class Gaps(unittest.TestCase):
             {'jsonrpc':'2.0','method':'notifications/initialized'},
             {'jsonrpc':'2.0','id':3,'method':'tools/list'},
             {'jsonrpc':'2.0','method':'tools/call','params':{'name':'wipstash_open','arguments':{'workspace':'never','path':str(self.h.root/'never'),'operation_id':'never'}}},
-            {'jsonrpc':'2.0','id':4,'method':'tools/call','params':{'name':'wipstash_checkpoint','arguments':{'workspace':'A','operation_id':'mcp-bad','expected_generation':-1}}},
+            {'jsonrpc':'2.0','id':4,'method':'tools/call','params':{'name':'wipstash_commit','arguments':{'workspace':'A','intent':'Invalid generation','operation_id':'mcp-bad','expected_generation':-1}}},
             {'jsonrpc':'2.0','id':5,'method':'tools/call','params':{'name':'unknown','arguments':{}}},
             {'jsonrpc':'2.0','id':6,'method':'tools/call','params':{'name':'wipstash_status','arguments':{}}}]
         wire='\n'.join(json.dumps(f) for f in frames)+'\n'

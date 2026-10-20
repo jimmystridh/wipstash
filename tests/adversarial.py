@@ -301,13 +301,18 @@ class Adversarial(unittest.TestCase):
         self.assertFalse((self.paths['B']/'docs/api.md').exists());self.assertEqual((self.paths['B']/'docs/untracked.txt').read_text(),'new file\n')
     def test_unsupported_paths_fail_before_checkpoint(self):
         a=self.paths['A'];write(a,'Case.txt','upper');write(a,'case.txt','lower')
-        before=manifest(a)
-        r=self.req(op='checkpoint',workspace='A',expected_generation=self.gen['A'],operation_id='collision-save',ok=False)
-        self.assertIn('collision',json.dumps(r).lower());self.assertEqual(before,manifest(a))
-        (a/'Case.txt').unlink();(a/'case.txt').unlink()
+        if (a/'Case.txt').samefile(a/'case.txt'):
+            self.assertEqual((a/'Case.txt').read_text(),'lower')
+        else:
+            before=manifest(a)
+            r=self.req(op='checkpoint',workspace='A',expected_generation=self.gen['A'],operation_id='collision-save',ok=False)
+            self.assertFalse(r.get('ok',False),r)
+            self.assertIn('collision',json.dumps(r).lower());self.assertEqual(before,manifest(a))
+        (a/'Case.txt').unlink();(a/'case.txt').unlink(missing_ok=True)
         outside=self.h.root/'outside-secret.txt';outside.write_text('OUTSIDE_CANARY')
         (a/'escape').symlink_to(outside)
         r=self.req(op='checkpoint',workspace='A',expected_generation=self.gen['A'],operation_id='symlink-save',ok=False)
+        self.assertFalse(r.get('ok',False),r)
         self.assertIn('symlink',json.dumps(r).lower());self.assertEqual(outside.read_text(),'OUTSIDE_CANARY')
     def test_foreign_or_backward_adoption_is_rejected(self):
         base=self.head()

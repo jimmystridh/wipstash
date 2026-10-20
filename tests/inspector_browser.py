@@ -194,7 +194,10 @@ async def run_checks(args):
         page.on('dialog',dialog)
         try:
             await page.goto('http://127.0.0.1:47831/',wait_until='networkidle')
-            await expect(page.locator('.history-entry')).to_have_count(6,timeout=30000)
+            await expect(page.get_by_role('heading',name='Shared history',exact=True)).to_be_visible(timeout=30000)
+            await expect(page.locator('.history-entry')).to_have_count(7)
+            await page.get_by_role('button',name='Recovery',exact=True).click()
+            await expect(page.locator('.history-entry')).to_have_count(6)
             await page.screenshot(path=str(out/'private-all.png'),full_page=True)
             # Keyboard navigation must respect input focus rather than hijacking typing.
             await page.locator('.history-entry').first.click()
@@ -238,7 +241,7 @@ async def run_checks(args):
             await expect(page.locator('body')).not_to_contain_text('INSPECTOR_PRIVATE_ONLY_A_9ca641')
             await page.get_by_label('Filter by workspace').select_option('B')
             await expect(page.locator('.history-entry')).to_have_count(1)
-            await expect(page.locator('.history-entry')).to_contain_text('quarantined')
+            await expect(page.locator('.history-entry')).to_contain_text('blocked')
             await expect(page.locator('.diff-scroll')).to_contain_text('B incompatible')
             await page.screenshot(path=str(out/'conflict.png'),full_page=True)
             transport['history_fail']=True
@@ -258,9 +261,9 @@ async def run_checks(args):
             await expect(page.locator('.inspector')).to_have_class('inspector light')
             await page.set_viewport_size({'width':390,'height':844})
             await page.get_by_label('Mobile workspace',exact=True).select_option('C')
-            await page.get_by_role('button',name='Private checkpoints',exact=True).click()
+            await page.get_by_role('button',name='Recovery',exact=True).click()
             await expect(page.locator('.history-entry')).to_have_count(1)
-            await expect(page.locator('.scope-pill')).to_contain_text('Private scope')
+            await expect(page.locator('.scope-pill')).to_contain_text('Local scope')
             await page.locator('.file-row',has_text='docs/unicode.txt').click()
             await expect(page.locator('.diff-scroll')).to_contain_text('café 日本語 🚀')
             await page.get_by_role('button',name='Shared history',exact=True).click()

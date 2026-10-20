@@ -18,6 +18,7 @@ pub struct Proposal {
     pub id: String,
     pub workspace: String,
     pub checkpoint: String,
+    #[serde(rename = "message", alias = "intent")]
     pub intent: String,
     pub state: String,
     pub head: Option<String>,
@@ -96,12 +97,28 @@ pub fn state_class(state: &str) -> &'static str {
         _ => "neutral",
     }
 }
+pub fn status_label(value: &str) -> &str {
+    match value {
+        "quarantined" => "blocked",
+        "coordinator_accepted" | "local_queued" | "queued_offline" => "pending",
+        "local_saved" | "private" => "saved",
+        other => other,
+    }
+}
+pub fn kind_label(value: &str) -> &str {
+    match value {
+        "checkpoint" => "Recovery",
+        "proposal" => "Commit",
+        "promotion" => "Merge",
+        other => other,
+    }
+}
 pub fn comparison_label(value: &str) -> &str {
     match value {
-        "adopted_base" => "Adopted base → checkpoint",
-        "proposal_base" => "Proposal base → published snapshot",
-        "previous_shared_head" => "Previous shared head → integration",
-        _ => "Snapshot comparison",
+        "adopted_base" => "Previous base → commit",
+        "proposal_base" => "Commit changes",
+        "previous_shared_head" => "Shared merge changes",
+        _ => "Commit comparison",
     }
 }
 /// Preserve a compact status glyph without inventing a new status vocabulary.

@@ -1,0 +1,6 @@
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+USER root
+COPY services/cloudrun/*.py /app/
+RUN uv run --frozen --group dev python -m unittest -v test_cloudrun && uv sync --frozen --no-dev
+USER wipstash

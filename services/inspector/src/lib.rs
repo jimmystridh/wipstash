@@ -229,7 +229,7 @@ impl Inspector {
             .map_err(storage)?;
         let ws=s.query_map([],|r|Ok(json!({"id":r.get::<_,String>(0)?,"generation":r.get::<_,i64>(1)?,"base":r.get::<_,String>(2)?,"checkpoint":r.get::<_,Option<String>>(3)?}))).map_err(storage)?.collect::<std::result::Result<Vec<_>,_>>().map_err(storage)?;
         let mut s=db.prepare("SELECT id,workspace,checkpoint,intent,state,head FROM proposals ORDER BY rowid DESC LIMIT 1001").map_err(storage)?;
-        let ps=s.query_map([],|r|Ok(json!({"id":r.get::<_,String>(0)?,"workspace":r.get::<_,String>(1)?,"checkpoint":r.get::<_,String>(2)?,"intent":r.get::<_,String>(3)?,"state":r.get::<_,String>(4)?,"head":r.get::<_,Option<String>>(5)?}))).map_err(storage)?.collect::<std::result::Result<Vec<_>,_>>().map_err(storage)?;
+        let ps=s.query_map([],|r|Ok(json!({"id":r.get::<_,String>(0)?,"workspace":r.get::<_,String>(1)?,"checkpoint":r.get::<_,String>(2)?,"message":r.get::<_,String>(3)?,"state":r.get::<_,String>(4)?,"head":r.get::<_,Option<String>>(5)?}))).map_err(storage)?.collect::<std::result::Result<Vec<_>,_>>().map_err(storage)?;
         let mut s=db.prepare("SELECT id,workspace,target,base,generation,state FROM adoption_conflicts ORDER BY rowid DESC LIMIT 1001").map_err(storage)?;
         let cs=s.query_map([],|r|Ok(json!({"id":r.get::<_,String>(0)?,"workspace":r.get::<_,String>(1)?,"target":r.get::<_,String>(2)?,"base":r.get::<_,String>(3)?,"generation":r.get::<_,i64>(4)?,"state":r.get::<_,String>(5)?}))).map_err(storage)?.collect::<std::result::Result<Vec<_>,_>>().map_err(storage)?;
         if ws.len() > 1000 || ps.len() > 1000 || cs.len() > 1000 {
@@ -456,7 +456,7 @@ fn contained(root: &Path, path: &Path) -> Result<PathBuf> {
 }
 fn entry_select(kind: &str) -> &'static str {
     match kind{
- "checkpoint"=>"SELECT 'checkpoint:'||c.id AS id,c.workspace,'checkpoint','Private checkpoint '||c.id,'local_saved',c.commit_oid,c.base,c.generation,(SELECT MAX(e.seq) FROM events e WHERE e.kind='checkpoint' AND json_extract(CASE WHEN json_valid(e.data) THEN e.data ELSE '{}' END,'$.checkpoint')=c.id) AS sequence,c.rowid AS ordinal,0 AS source FROM checkpoints c",
+ "checkpoint"=>"SELECT 'checkpoint:'||c.id AS id,c.workspace,'checkpoint','Recovery record '||c.id,'local_saved',c.commit_oid,c.base,c.generation,(SELECT MAX(e.seq) FROM events e WHERE e.kind='checkpoint' AND json_extract(CASE WHEN json_valid(e.data) THEN e.data ELSE '{}' END,'$.checkpoint')=c.id) AS sequence,c.rowid AS ordinal,0 AS source FROM checkpoints c",
  "proposal"=>"SELECT 'proposal:'||p.id AS id,p.workspace,'proposal',p.intent,p.state,p.commit_oid,p.base,NULL,(SELECT MAX(e.seq) FROM events e WHERE e.kind='published' AND json_extract(CASE WHEN json_valid(e.data) THEN e.data ELSE '{}' END,'$.proposal')=p.id) AS sequence,p.rowid AS ordinal,0 AS source FROM proposals p",
  _=>"SELECT 'promotion:'||p.id AS id,COALESCE(q.workspace,'') AS workspace,'promotion','Shared integration '||p.id,p.state,p.new,p.old,NULL,(SELECT MAX(e.seq) FROM events e WHERE e.kind='integrated' AND json_extract(CASE WHEN json_valid(e.data) THEN e.data ELSE '{}' END,'$.proposal')=p.proposal AND json_extract(CASE WHEN json_valid(e.data) THEN e.data ELSE '{}' END,'$.head')=p.new) AS sequence,p.rowid AS ordinal,1 AS source FROM promotions p LEFT JOIN proposals q ON q.id=p.proposal"
 }
